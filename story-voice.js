@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, DEEP_SCHEMA, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.3.2'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.3.3'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -184,6 +184,7 @@ export class StoryVoice {
         this._timers = new Map();
         this._installed = false;
         this.speakerOverrides = this._loadOverrides();
+        this._redraws = new Map();
         this._genderOf = this._loadGenders();
         this._speakerMemo = new Map();
         this._cueMemo = new Map(); // 模型标的 [[名字]] 显示时会被藏掉，重新处理时靠这里记住
@@ -282,6 +283,40 @@ export class StoryVoice {
             full += n.nodeValue;
         }
         return this._hasDialogue(full) ? full : '';
+    }
+
+    // 「复制诊断信息」：按钮不出现时，把需要的信息整理成一段文字
+    diagnose(mesid = null) {
+        const ctx = window.SillyTavern?.getContext?.() || {};
+        const chat = ctx.chat || [];
+        let id = mesid;
+        if (id === null || id === undefined) { id = chat.length - 1; while (id >= 0 && (chat[id]?.is_user || chat[id]?.is_system)) id -= 1; }
+        const msg = chat[id];
+        const s = this.getSettings();
+        const mesEl = document.querySelector(`#chat .mes[mesid="${id}"]`);
+        const box = mesEl?.querySelector('.mes_text');
+        const out = [];
+        out.push(`正文朗读 v${SV_VERSION} · 第 ${id} 楼 · 模式 ${s.analysisMode} · 启用 ${s.enabled} · 只读标签「${s.deepInclude}」排除「${s.deepExclude}」 · 对白符号 ${s.quotes} · 跳过 ${s.skips} · NPC ${s.npcMode}`);
+        if (!msg) { out.push('找不到这一楼的聊天记录'); return out.join('\n'); }
+        let full = '';
+        if (box) {
+            const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, { acceptNode: (n) => { const p = n.parentElement; if (!p || p.closest('script,style,code,pre,button,textarea,iframe,select,.yzsv-bar,.yzsv-all')) return NodeFilter.FILTER_REJECT; return NodeFilter.FILTER_ACCEPT; } });
+            let last = null;
+            for (let n = walker.nextNode(); n; n = walker.nextNode()) { const b = n.parentElement.closest('p,div,li,blockquote,h1,h2,h3,h4,h5,h6,td') || box; if (last && last !== b) full += '\n'; last = b; full += n.nodeValue; }
+        }
+        let found = [], allowedTxt = '';
+        try { found = this._analyze(full, { id, msg, useMemo: false }).lines.map(r => `${r.speaker || '?'}「${r.text.slice(0, 30)}」 有音色:${this._hasVoice(r.speaker)}`); } catch (e) { found = [`出错：${e.message}`]; }
+        try { const a = this._deepRawText(msg.mes || ''); allowedTxt = `${a.found ? '找到了标签' : '没找到标签'}，台词 ${this._analyze(a.text, { msg, useMemo: false }).lines.length} 句`; } catch (e) { allowedTxt = `出错：${e.message}`; }
+        const bars = box ? [...box.querySelectorAll('.yzsv-bar')] : [];
+        out.push(`页面：${box ? '有正文' : '没有正文元素'} · 现在挂着 ${bars.length} 个按钮 · 楼层下面的按钮行 ${box?.querySelector('.yzsv-all') ? '有' : '没有'} · 有输入框 ${!!box?.querySelector('textarea')} · iframe ${box ? box.querySelectorAll('iframe').length : 0} 个`);
+        bars.slice(0, 5).forEach((b, i) => { const r = b.getBoundingClientRect(); const cs = getComputedStyle(b); out.push(`按钮${i + 1}：在 <${b.parentElement?.tagName?.toLowerCase()} class="${String(b.parentElement?.className || '').slice(0, 40)}"> 里 · 显示 ${cs.display}/${cs.visibility} · 大小 ${Math.round(r.width)}×${Math.round(r.height)}`); });
+        out.push(`页面上找到的台词（${found.length}）：\n  ${found.slice(0, 12).join('\n  ')}`);
+        out.push(`原文按标签取：${allowedTxt}`);
+        out.push(`最近的事件：\n  ${(this._diag || []).filter(x => String(x.mesid) === String(id) || !x.mesid).slice(-20).map(x => `${x.t} ${x.type}${x.by ? ' by ' + x.by : ''}${x.ours ? '(自己)' : ''}${x.bars !== undefined ? ' 按钮' + x.bars : ''}`).join('\n  ')}`);
+        out.push(`原文开头：\n${String(msg.mes || '').slice(0, 1500)}`);
+        out.push(`页面正文开头：\n${full.slice(0, 800)}`);
+        if (box) out.push(`页面结构：\n${box.innerHTML.replace(/\s+/g, ' ').slice(0, 2500)}`);
+        return out.join('\n');
     }
 
     // 这一楼分析结果的钥匙：按聊天记录里这条消息的原文算（不受页面显示、美化卡片影响），
@@ -976,7 +1011,26 @@ export class StoryVoice {
             watch.set(id, setTimeout(() => {
                 watch.delete(id);
                 const el = document.querySelector(`#chat .mes[mesid="${CSS.escape(String(id))}"]`);
-                if (el && this._needsRedraw(el)) this.processElement(el);
+                if (!el || !this._needsRedraw(el)) return;
+                // 被别的脚本反复重画：8 秒内超过 6 次就不再跟它抢（不然两边一直互相覆盖）
+                const now = Date.now();
+                const hist = (this._redraws.get(id) || []).filter(t => now - t < 8000);
+                hist.push(now); this._redraws.set(id, hist);
+                if (hist.length > 6) {
+                    this._outside = this._outside || new Set();
+                    if (!this._outside.has(String(id))) {
+                        // 第一招：按钮改放到段落后面，再挂一次
+                        this._outside.add(String(id));
+                        this._redraws.set(id, []);
+                        this._diagLog('outside', { mesid: id });
+                        this.processElement(el);
+                        return;
+                    }
+                    if (!this._fightTold) { this._fightTold = true; this._toast('按钮被别的脚本覆盖了', `第 ${id} 楼一直被页面上别的脚本 / 正则重画，正文朗读的按钮挂不稳。可以在设置首页点「复制诊断信息」发给作者`, 'warning'); }
+                    this._diagLog('fight', { mesid: id });
+                    return;
+                }
+                this.processElement(el);
             }, 180));
         };
         const attach = () => {
@@ -985,6 +1039,14 @@ export class StoryVoice {
             const obs = new MutationObserver((list) => {
                 const seen = new Set();
                 list.forEach(m => {
+                    // 记下是谁把按钮拿掉的（诊断用）
+                    m.removedNodes.forEach(n => {
+                        if (n.nodeType !== 1) return;
+                        if (n.classList?.contains('yzsv-bar') || n.querySelector?.('.yzsv-bar')) {
+                            const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+                            this._diagLog('removed', { mesid: t?.closest?.('.mes')?.getAttribute('mesid'), by: `${t?.tagName || ''}.${String(t?.className || '').slice(0, 60)}`, ours: !!this._drawing });
+                        }
+                    });
                     const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
                     const hits = t?.classList?.contains('mes') ? [t] : (t?.closest?.('.mes[mesid]') ? [t.closest('.mes[mesid]')] : []);
                     m.addedNodes.forEach(n => { if (n.nodeType === 1 && n.classList?.contains('mes')) hits.push(n); });
@@ -1158,17 +1220,27 @@ export class StoryVoice {
         return `${s.enabled ? 1 : 0}|${s.analysisMode}|${s.lineEdit ? 1 : 0}|${msg?.swipe_id ?? ''}|${this._hash(String(msg?.mes || ''))}`;
     }
 
+    _diagLog(type, info = {}) {
+        this._diag = this._diag || [];
+        this._diag.push({ t: new Date().toISOString().slice(11, 23), type, ...info });
+        if (this._diag.length > 60) this._diag.shift();
+    }
+
     processElement(mesEl, opts = {}) {
+        this._drawing = true;
         try { this._processElement(mesEl, opts); }
         catch (e) {
             console.warn('[正文朗读] 挂按钮出错：', e);
             if (!this._drawErrTold) { this._drawErrTold = true; this._toast('正文朗读出错了', `挂按钮时出错：${String(e?.message || e).slice(0, 120)}（截图发给作者）`, 'error'); }
+            this._drawing = false;
             return;
         }
+        this._drawing = false;
         const box = mesEl?.querySelector?.('.mes_text');
         if (!box || opts.live) return;
+        if (!opts.live) this._diagLog('draw', { mesid: mesEl.getAttribute('mesid'), bars: box.querySelectorAll('.yzsv-bar').length });
         box.dataset.yzsvSig = this._boxSig(mesEl);
-        box.dataset.yzsvHas = box.querySelector('.yzsv-bar') ? '1' : '0';
+        box.dataset.yzsvHas = String(box.querySelectorAll('.yzsv-bar').length); // 挂了几个：少了任何一个都要补
     }
 
     // 酒馆重画了这一楼（切换回复、编辑、美化脚本、重新进聊天……）按钮被冲掉了：要重新挂
@@ -1178,7 +1250,9 @@ export class StoryVoice {
         const chat = window.SillyTavern?.getContext?.()?.chat || [];
         if (this._isLive() && Number(mesEl.getAttribute('mesid')) === chat.length - 1) return false; // 生成中的那楼由边写边挂处理
         if (box.dataset.yzsvSig !== this._boxSig(mesEl)) return true;
-        return box.dataset.yzsvHas === '1' && (!box.querySelector('.yzsv-bar') || !box.querySelector('.yzsv-all'));
+        const want = Number(box.dataset.yzsvHas || 0);
+        // 别的脚本（台词高亮之类）只重画了某一段：那一段的按钮没了，别的还在——也要补
+        return want > 0 && (box.querySelectorAll('.yzsv-bar').length < want || !box.querySelector('.yzsv-all'));
     }
 
     _processElement(mesEl, { live = false } = {}) {
@@ -1283,6 +1357,12 @@ export class StoryVoice {
             bar.dataset.line = String(r.index);
             this._lineContext.set(`${id}:${r.index}`, full.slice(Math.max(0, r.start - 120), r.start) + '【' + full.slice(r.start, r.end) + '】' + full.slice(r.end, r.end + 30));
             bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play${this._isFav(bar.dataset.speaker || '', r.text) ? ' is-fav' : ''}" title="播放（${esc(bar.dataset.speaker || '默认音色')}）；长按收藏这一版（删除去「语音收藏」里）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成（长按：选说话人）">↻</button>${live || !s.lineEdit ? '' : `<button type="button" class="yzsv-btn yzsv-cfg${r.deep && lineEntry?.lines?.[r.text]?.edited ? ' is-edited' : ''}" title="调这句的演法（情绪、语速、语气词…）">🎭</button>`}`;
+            // 这一楼的段落会被别的脚本重画：按钮放到这一段后面（不放进段落里面），就不会被冲掉
+            if (this._outside?.has(String(id))) {
+                bar.classList.add('is-outside');
+                const block = entry.node.parentElement?.closest('p,li,blockquote,h1,h2,h3,h4,h5,h6,td,div') || entry.node.parentElement;
+                if (block && block !== box && box.contains(block)) { block.after(bar); return; }
+            }
             const range = document.createRange();
             range.setStart(entry.node, offset);
             range.collapse(true);
@@ -2562,6 +2642,7 @@ export class StoryVoice {
         const st = document.createElement('style');
         st.id = STYLE_ID;
         st.textContent = `
+.yzsv-bar.is-outside { display: flex; margin: 2px 0 8px; }
 .yzsv-bar { display: inline-flex; align-items: center; gap: 3px; margin: 0 3px; vertical-align: middle; white-space: nowrap; }
 .yzsv-btn { border: 1px solid rgba(255,255,255,.18); background: rgba(127,127,127,.16); color: inherit; opacity: .8; border-radius: 999px; padding: 0 8px; min-width: 26px; height: 22px; font-size: .75em; line-height: 20px; cursor: pointer; font-family: inherit; }
 .yzsv-btn:hover { opacity: 1; }
@@ -2806,6 +2887,7 @@ export class StoryVoiceApp {
                         <button type="button" class="yzsv-mini" id="yzsv-clear">清缓存</button>
                     </div>
                     <div class="yzsv-note" style="margin:8px 6px 0;">每句语音生成后会缓存，再点 ▶ 不会重复扣费。「试听」用默认音色；角色、NPC 的音色在「角色库」里配。</div>
+                    <div class="yzsv-btns" style="grid-template-columns:1fr;margin:14px 0 0"><button type="button" class="yzsv-mini" id="yzsv-diag">🩺 复制诊断信息（正文里按钮不出现时点这个，发给作者）</button></div>
                     <div class="yzsv-note" style="margin:10px 6px 0;text-align:center;opacity:.7">正文朗读 v${SV_VERSION}</div>
                 </div>
             </div>`;
@@ -2898,7 +2980,7 @@ export class StoryVoiceApp {
                             </div>
                             <input type="hidden" data-k="analysisMode" value="${esc(s.analysisMode)}">
                         </div>
-                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写正文时顺手标上看不见的标记——每句台词前的 [[名字|语气]]，每楼开头的情节 [[基调:xx]]<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，每楼开头和换场景的地方的环境 [[环境:xx]]（xx 是雨声、森林、教室等多种之一，none = 安静没有环境声）</span>。边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，环境声也能在 🎭 里改</span>。</div>
+                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写正文时顺手标上看不见的标记——每句台词前的 [[名字|语气]]，每楼开头的情节 [[基调:xx]]<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，每楼开头和换场景的地方的环境 [[环境:xx]]（xx 是雨声、森林、教室等 42 种之一，none = 安静没有环境声）</span>。边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，环境声也能在 🎭 里改</span>。</div>
                         <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用这个人用的语音渠道重新生成这一句（Fish、MiniMax、OpenAI、豆包……会自动换成各自认的写法）。</div>
 
                         <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
@@ -2923,7 +3005,7 @@ export class StoryVoiceApp {
 
                     <div class="yzsv-sec">环境声 · 拟声词</div>
                     <div class="yzsv-card pad">
-                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层环境声（雨、雪、森林、海边、街道、教室、咖啡馆、烟花等多种，WebAudio 实时合成）。简单分析由正文模型标 [[环境:xx]]，深度分析由分析模型判断，手动在 🎭 里给这一楼选；关掉后简单分析也不会再让模型标环境', 'padding:0 0 10px;')}
+                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层环境声（雨、雪、森林、海边、街道、教室、咖啡馆、烟花等 42 种，WebAudio 实时合成）。简单分析由正文模型标 [[环境:xx]]，深度分析由分析模型判断，手动在 🎭 里给这一楼选；关掉后简单分析也不会再让模型标环境', 'padding:0 0 10px;')}
                         <div class="yzsv-field"><label>环境声音量 <span class="yzsv-ambv">${esc(s.ambienceVol)}</span>%</label><input type="range" min="5" max="80" step="5" class="yzsv-range" data-k="ambienceVol" value="${esc(s.ambienceVol)}"></div>
                         ${sw('autoOno', '自动加拟声词', '简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加', 'padding:0 0 10px;')}
                     </div>
@@ -3232,6 +3314,20 @@ export class StoryVoiceApp {
             if (nb) nb.scrollTop = 0;
         }));
         root.querySelector('#yzsv-sub-back')?.addEventListener('click', () => this.render('main'));
+        root.querySelector('#yzsv-diag')?.addEventListener('click', (ev) => {
+            const btn = ev.currentTarget;
+            let text = '';
+            try { text = this.sv.diagnose(); } catch (e) { text = `诊断出错：${e?.message || e}`; }
+            const done = () => { btn.textContent = '已复制 ✓ 去粘贴给作者吧'; setTimeout(() => { btn.textContent = '🩺 复制诊断信息（正文里按钮不出现时点这个，发给作者）'; }, 2500); };
+            const fallback = () => {
+                const ta = document.createElement('textarea');
+                ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'; document.body.appendChild(ta); ta.select();
+                let ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+                ta.remove();
+                if (ok) done(); else { btn.insertAdjacentHTML('afterend', `<textarea class="yzsv-input yzsv-scrollbox" style="height:200px;margin-top:8px;font-size:11px">${esc(text)}</textarea>`); toast('没法自动复制', '下面框里的文字长按全选复制'); }
+            };
+            if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+        });
         root.querySelector('#yzsv-deep-preview')?.addEventListener('click', (ev) => {
             const btn = ev.currentTarget;
             const out = root.querySelector('#yzsv-deep-preview-out');
