@@ -84,7 +84,9 @@ library.onChange = () => sv.onVoicesChanged();
 const app = new StoryVoiceApp(shell, sv);
 window.storyvoiceReader = Object.assign(window.storyvoiceReader || {}, { storyVoice: sv, app, library, engine, open: openPanel });
 
-// 魔法棒菜单
+// ---------- 入口：魔法棒菜单 / 悬浮按钮（朗读设置 → 基础 → 入口 里选）----------
+const entryMode = () => { try { const m = sv.getSettings().entryMode; return ['wand', 'float', 'both'].includes(m) ? m : 'wand'; } catch (e) { return 'wand'; } };
+
 function addWandItem() {
     const menu = document.getElementById('extensionsMenu');
     if (!menu) return false;
@@ -101,6 +103,69 @@ function addWandItem() {
     menu.appendChild(item);
     return true;
 }
+
+// 悬浮按钮：可以拖到任意位置，松手贴到左右边，位置记在这台设备上
+const FLOAT_POS_KEY = 'yzr-float-pos';
+function addFloatButton() {
+    if (document.getElementById('yzr-float')) return;
+    const btn = document.createElement('button');
+    btn.id = 'yzr-float';
+    btn.type = 'button';
+    btn.title = '正文朗读';
+    btn.setAttribute('aria-label', '打开正文朗读');
+    btn.innerHTML = '<i class="fa-solid fa-volume-high" aria-hidden="true"></i>';
+    document.body.appendChild(btn);
+    const size = 46;
+    const clamp = (x, y) => [Math.max(4, Math.min(window.innerWidth - size - 4, x)), Math.max(4, Math.min(window.innerHeight - size - 4, y))];
+    const place = (x, y) => { const [cx, cy] = clamp(x, y); btn.style.left = `${cx}px`; btn.style.top = `${cy}px`; };
+    let pos = null;
+    try { pos = JSON.parse(localStorage.getItem(FLOAT_POS_KEY) || 'null'); } catch (e) { pos = null; }
+    // 存的是比例，横竖屏切换后位置也合理
+    const fromSaved = () => pos && Number.isFinite(pos.x) ? place(pos.x * window.innerWidth, pos.y * window.innerHeight) : place(window.innerWidth - size - 10, window.innerHeight * 0.62);
+    fromSaved();
+    let drag = null;
+    btn.addEventListener('pointerdown', (e) => {
+        const r = btn.getBoundingClientRect();
+        drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top, sx: e.clientX, sy: e.clientY, moved: false };
+        try { btn.setPointerCapture(e.pointerId); } catch (err) { /* 忽略 */ }
+    });
+    btn.addEventListener('pointermove', (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 6) return;
+        drag.moved = true;
+        btn.classList.add('is-drag');
+        place(e.clientX - drag.dx, e.clientY - drag.dy);
+    });
+    const end = (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        const moved = drag.moved;
+        drag = null;
+        btn.classList.remove('is-drag');
+        if (!moved) { openPanel(); return; }
+        // 贴边
+        const r = btn.getBoundingClientRect();
+        const x = r.left + size / 2 < window.innerWidth / 2 ? 6 : window.innerWidth - size - 6;
+        place(x, r.top);
+        pos = { x: parseFloat(btn.style.left) / window.innerWidth, y: parseFloat(btn.style.top) / window.innerHeight };
+        try { localStorage.setItem(FLOAT_POS_KEY, JSON.stringify(pos)); } catch (err) { /* 忽略 */ }
+    };
+    btn.addEventListener('pointerup', end);
+    btn.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; btn.classList.remove('is-drag'); } });
+    window.addEventListener('resize', fromSaved);
+}
+
+function applyEntry() {
+    const m = entryMode();
+    const wantWand = m === 'wand' || m === 'both';
+    const wantFloat = m === 'float' || m === 'both';
+    let ok = true;
+    if (wantWand) ok = addWandItem() && ok;
+    else document.getElementById('yzr-wand-item')?.remove();
+    if (wantFloat) addFloatButton();
+    else document.getElementById('yzr-float')?.remove();
+    return ok;
+}
+window.storyvoiceReader.applyEntry = applyEntry;
 
 // 扩展设置面板里也放一个入口
 function addSettingsEntry() {
@@ -121,7 +186,7 @@ function addSettingsEntry() {
     return true;
 }
 
-const tryMount = () => { const a = addWandItem(); const b = addSettingsEntry(); return a && b; };
+const tryMount = () => { const a = applyEntry(); const b = addSettingsEntry(); return a && b; };
 if (!tryMount()) {
     let n = 0;
     const t = setInterval(() => { if (tryMount() || ++n > 60) clearInterval(t); }, 500);

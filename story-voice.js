@@ -33,6 +33,7 @@ const DEFAULTS = Object.freeze({
     ttsProvider: '',      // 正文朗读用哪个语音渠道：'' = 跟随小手机「设置 → 语音」
     ttsModels: {},        // 每个渠道单独指定的模型：{ fish: 's2.1-pro', minimax_cn: 'speech-2.8-hd' }
     lineEdit: true,       // 每句台词后面显示 🎭（单句调整）
+    entryMode: 'wand',    // 打开设置的入口：wand = 魔法棒菜单；float = 悬浮按钮；both = 都要
     channelMode: 'per',   // per = 每个人按自己配的渠道（没单独配的用上面选的渠道）；unified = 统一用上面选的渠道
     deepPresets: [],      // 深度分析保存的接口：[{ id, name, url, key, model }]
     customUrl: '',        // 第三方（OpenAI 兼容）语音接口
@@ -239,8 +240,41 @@ export class StoryVoice {
     }
 
     // 一楼正文（<content> 里、去掉 [[标记]]）的指纹：正文改了就重新分析
+    // 深度分析读的正文：先用聊天记录原文（<content> 里的）；原文里找不到台词时
+    // （美化卡片、正则替换后的楼层、没有 <content> 的格式），改用页面上实际显示的正文
     _deepText(msg) {
-        return this._rawToText(msg?.mes || '');
+        const raw = this._rawToText(msg?.mes || '');
+        if (this._hasDialogue(raw)) return raw;
+        return this._domTextOf(msg) || raw;
+    }
+
+    _hasDialogue(text = '') {
+        const t = String(text || '');
+        return findRanges(t, parsePairs(this.getSettings().quotes), 10000).some(r => /[\p{L}\p{N}]/u.test(t.slice(r.innerStart, r.innerEnd)));
+    }
+
+    _domTextOf(msg) {
+        const chat = window.SillyTavern?.getContext?.()?.chat || [];
+        const id = chat.indexOf(msg);
+        if (id < 0) return '';
+        const box = document.querySelector(`#chat .mes[mesid="${id}"] .mes_text`);
+        if (!box) return '';
+        const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT, {
+            acceptNode: (n) => {
+                const p = n.parentElement;
+                if (!p || p.closest('script,style,code,pre,button,textarea,iframe,select,.yzsv-bar,.yzsv-all')) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        });
+        let full = '';
+        let last = null;
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const block = n.parentElement.closest('p,div,li,blockquote,h1,h2,h3,h4,h5,h6,td') || box;
+            if (last && last !== block) full += '\n';
+            last = block;
+            full += n.nodeValue;
+        }
+        return this._hasDialogue(full) ? full : '';
     }
 
     _deepHashOf(msg) {
@@ -275,14 +309,14 @@ export class StoryVoice {
         const msg = ctx?.chat?.[id];
         if (!msg || msg.is_system || (msg.is_user && !s.readUser)) return Promise.resolve(null);
         const hash = this._deepHashOf(msg);
-        if (!hash) return Promise.resolve(null);
+        if (!hash) { this._toast('没法分析这一楼', '没读到这一楼的正文', 'error'); return Promise.resolve(null); }
         if (!force && this._deepStore()[hash] && !this._deepStore()[hash].manualOnly) return Promise.resolve(this._deepStore()[hash]);
         if (this._deepJobs.has(hash)) return this._deepJobs.get(hash);
         const job = (async () => {
             await this._getWechatData().catch(() => null);
             const full = this._deepText(msg);
             const { lines } = this._analyze(full, { id, msg });
-            if (!lines.length) return null;
+            if (!lines.length) throw new Error(`这一楼没找到台词（对白符号：${s.quotes || '未设置'}），没有调用分析模型`);
             const items = lines.map((r, i) => ({ id: i + 1, start: r.start, text: r.text, r }));
             const clean = (t) => t.replace(MARK_RE, (all, body) => markDisplay(body));
             // 编号插进正文，再藏掉 [[标记]]（位置从后往前插不会乱）
@@ -536,6 +570,7 @@ export class StoryVoice {
         s.markSpeaker = true;                          // 说话人标记一直要（认人靠它）
         s.emotionCue = s.analysisMode === 'simple';    // 语气只有简单分析需要正文模型写
         s.lineEdit = s.lineEdit !== false;
+        s.entryMode = ['wand', 'float', 'both'].includes(s.entryMode) ? s.entryMode : 'wand';
         s.channelMode = s.channelMode === 'unified' ? 'unified' : 'per';
         s.readUser = false;
         s.deepPresets = Array.isArray(s.deepPresets) ? s.deepPresets.filter(x => x && x.id) : [];
@@ -1118,7 +1153,8 @@ export class StoryVoice {
                 const label = pending ? '🎭 正在分析情绪…' : deepEntry ? `🎭 ${esc(toneShown || '已分析')}${toneShown === '亲密' ? ' · NSFW' : ''}${esc(ambText)}${deepEntry.arc ? ` · ${esc(deepEntry.arc)}` : ''}` : err ? '🎭 分析失败' : '🎭 未分析';
                 deepHtml = deepEntry && !pending
                     ? `<button type="button" class="yzsv-deep yzsv-deep-open" title="点开查看、修改每句的分析">${label} ›</button><button type="button" class="yzsv-btn yzsv-deep-open">查看 / 编辑</button><button type="button" class="yzsv-btn yzsv-reanalyze">重新分析</button>`
-                    : `<span class="yzsv-deep${pending ? ' is-busy' : ''}" title="${esc(err || '')}">${label}</span>${pending ? '' : `<button type="button" class="yzsv-btn yzsv-reanalyze">分析</button>`}`;
+                    // 还没分析 / 分析中 / 失败：逐句调整的入口照样在
+                    : `<span class="yzsv-deep${pending ? ' is-busy' : ''}" title="${esc(err || '')}">${label}${err && !pending ? `：${esc(err.slice(0, 40))}` : ''}</span>${pending ? '' : `<button type="button" class="yzsv-btn yzsv-reanalyze">${err ? '重试' : '分析'}</button>`}<button type="button" class="yzsv-btn yzsv-deep-open">🎭 逐句调整</button>`;
             }
             const toneChip = !deepOn && floorTone ? `<span class="yzsv-deep${floorTone === '亲密' ? ' is-nsfw' : ''}">🎬 ${esc(floorTone)}${floorTone === '亲密' ? ' · NSFW' : ''}</span>` : '';
             const editBtn = deepOn ? '' : `${toneChip}<button type="button" class="yzsv-btn yzsv-deep-open">🎭 逐句调整</button>`;
@@ -2442,6 +2478,10 @@ export class StoryVoiceApp {
                     <div class="yzsv-card">
                         ${sw('enabled', '启用正文朗读', '正文里对白符号中的台词后面出现 ▶ 和 ↻')}
                         ${sw('lineEdit', '每句后面显示 🎭', '单句调整演法的按钮；关掉后每句只剩 ▶ ↻，想调时在楼层下面的「逐句调整」或长按 ↻ 里进')}
+                        <div class="yzsv-field" style="padding:12px 0 10px;margin:0"><label>从哪里打开这个设置</label>
+                            <div class="yzsv-seg">${[['wand', '魔法棒菜单'], ['float', '悬浮按钮'], ['both', '都要']].map(([k, l]) => `<button type="button" data-entry="${k}" class="${(s.entryMode || 'wand') === k ? 'is-on' : ''}">${l}</button>`).join('')}</div>
+                            <div class="yzsv-note">悬浮按钮可以拖到任意位置，松手自动贴边。扩展面板里的「打开正文朗读设置」一直都在。</div>
+                        </div>
                     </div>
 
                     <div class="yzsv-sec">对白符号 · 跳过符号</div>
@@ -2868,6 +2908,12 @@ export class StoryVoiceApp {
             if (nb) nb.scrollTop = 0;
         }));
         root.querySelector('#yzsv-sub-back')?.addEventListener('click', () => this.render('main'));
+        root.querySelectorAll('[data-entry]').forEach(b => b.addEventListener('click', () => {
+            root.querySelectorAll('[data-entry]').forEach(x => x.classList.toggle('is-on', x === b));
+            this.sv.saveSettings({ entryMode: b.dataset.entry });
+            try { window.storyvoiceReader?.applyEntry?.(); } catch (e) { /* 忽略 */ }
+            toast('已保存', { wand: '从魔法棒菜单打开', float: '从悬浮按钮打开', both: '魔法棒菜单和悬浮按钮都能打开' }[b.dataset.entry]);
+        }));
         root.querySelector('#yzsv-back')?.addEventListener('click', () => {
             if (typeof this.phoneShell?.goHome === 'function') this.phoneShell.goHome();
             else window.dispatchEvent(new CustomEvent('phone:goHome'));
