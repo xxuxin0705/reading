@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, DEEP_SCHEMA, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.3.1'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.3.2'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -619,7 +619,11 @@ export class StoryVoice {
             lines = this._analyze(whole, { msg, useMemo: false }).lines;
         }
         if (!lines.length) return null;
-        return new Set(lines.map(r => this._normLine(r.text)));
+        // 只比字母、数字、汉字、假名：页面上的正则美化改了标点、符号、空格也对得上
+        const key = (x) => (String(x || '').match(/[\p{L}\p{N}]/gu) || []).join('');
+        const keys = lines.map(r => key(r.text)).filter(Boolean);
+        const all = keys.join('\u0001');
+        return { has: (t) => { const k = key(t); return !!k && (keys.includes(k) || all.includes(k) || keys.some(x => x.includes(k) || k.includes(x))); } };
     }
 
     _deepFor(entry, text) {
@@ -1155,7 +1159,12 @@ export class StoryVoice {
     }
 
     processElement(mesEl, opts = {}) {
-        this._processElement(mesEl, opts);
+        try { this._processElement(mesEl, opts); }
+        catch (e) {
+            console.warn('[正文朗读] 挂按钮出错：', e);
+            if (!this._drawErrTold) { this._drawErrTold = true; this._toast('正文朗读出错了', `挂按钮时出错：${String(e?.message || e).slice(0, 120)}（截图发给作者）`, 'error'); }
+            return;
+        }
         const box = mesEl?.querySelector?.('.mes_text');
         if (!box || opts.live) return;
         box.dataset.yzsvSig = this._boxSig(mesEl);
@@ -1219,7 +1228,12 @@ export class StoryVoice {
         // 只给允许读的部分（默认 <content> 里、去掉思考过程和排除的标签）里的台词挂按钮：
         // 预设把思维链也显示在正文里时，那里面的引号不会被当成台词
         const allowed = this._allowedLines(msg);
-        let lines = allowed ? found.filter(r => allowed.has(this._normLine(r.text))) : found;
+        let lines = allowed ? found.filter(r => allowed.has(r.text)) : found;
+        // 原文里明明有台词，页面上的却一句都对不上：多半是显示用的正则把文字改了，这时不限制，免得按钮全没了
+        if (allowed && found.length && !lines.length) {
+            if (!this._mismatchWarned) { this._mismatchWarned = true; console.warn('[正文朗读] 页面上的台词和聊天记录原文对不上（可能是显示用的正则改了文字），这一楼不按标签范围过滤'); }
+            lines = found;
+        }
         // 深度分析：说话人没标出来时用分析结果；每句挂上分析出的演法
         const deepOn = s.analysisMode === 'deep' && !live;
         const deepEntry = deepOn ? this._deepEntry(msg) : null;
@@ -2757,7 +2771,7 @@ export class StoryVoiceApp {
                         ${this.sv.standalone ? entry('lib', '👥', '角色库', libSum) : ''}
                         ${entry('api', '🔌', 'API 设置', apiSum)}
                         ${entry('emotion', '🎭', '情绪分析', emoSum)}
-                        ${entry('favs', '⭐', '语音收藏', '长按正文里的 ▶ 收藏，再长按取消')}
+                        ${entry('favs', '⭐', '语音收藏', '长按正文里的 ▶ 收藏这一版，删除在收藏页')}
                     </div>
 
                     <div class="yzsv-sec">基础</div>
@@ -2962,7 +2976,7 @@ export class StoryVoiceApp {
                         <div class="yzsv-frow"><span>角色</span>${chip('speaker', '', '全部', all.length)}${[...speakers].sort((a, b) => b[1] - a[1]).map(([k, n]) => chip('speaker', k, k, n)).join('')}</div>
                         ${tags.size ? `<div class="yzsv-frow"><span>标签</span>${chip('tag', '', '全部')}${[...tags].sort((a, b) => b[1] - a[1]).map(([k, n]) => chip('tag', k, `#${k}`, n)).join('')}</div>` : ''}
                     </div>
-                    ${all.length ? (list.length ? '' : '<div class="yzsv-note" style="text-align:center;padding:30px 10px;">没有符合筛选的收藏</div>') : '<div class="yzsv-note" style="text-align:center;padding:40px 10px;">还没有收藏<br>正文里长按某句的 ▶（再长按一次取消），或长按 ↻ 选「⭐ 收藏这句语音」</div>'}
+                    ${all.length ? (list.length ? '' : '<div class="yzsv-note" style="text-align:center;padding:30px 10px;">没有符合筛选的收藏</div>') : '<div class="yzsv-note" style="text-align:center;padding:40px 10px;">还没有收藏<br>正文里长按某句的 ▶ 收藏这一版，或长按 ↻ 选「⭐ 收藏这句语音」；删除在这里</div>'}
                     ${list.map(x => {
                         const d = day(x.at);
                         const head = d !== lastDay ? `<div class="yzsv-fday">${d}</div>` : '';
