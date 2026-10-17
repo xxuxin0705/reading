@@ -278,7 +278,16 @@ export class StoryVoice {
         return this._hasDialogue(full) ? full : '';
     }
 
+    // 这一楼分析结果的钥匙：按聊天记录里这条消息的原文算（不受页面显示、美化卡片影响），
+    // 只要消息没被改，分析完的结果和之后的手动修改一直对得上，不会被当成「没分析」又去调副 API
     _deepHashOf(msg) {
+        const raw = String(msg?.mes || '').replace(MARK_RE, '').replace(/\s+/g, '');
+        if (raw) return `m${this._hash(raw)}`;
+        return this._legacyHashOf(msg);
+    }
+
+    // 旧版本按提取出的正文算的钥匙：找得到就接着用（下次保存时换成新钥匙）
+    _legacyHashOf(msg) {
         const t = this._deepText(msg).replace(MARK_RE, '').replace(/\s+/g, '');
         return t ? this._hash(t) : '';
     }
@@ -287,7 +296,11 @@ export class StoryVoice {
     _lineEntry(msg) {
         if (!msg) return null;
         const h = this._deepHashOf(msg);
-        return h ? this._deepStore()[h] || null : null;
+        if (!h) return null;
+        const st = this._deepStore();
+        if (st[h]) return st[h];
+        const old = this._legacyHashOf(msg);
+        return (old && st[old]) || null;
     }
 
     // 深度分析模式下、模型真正分析过的那份
@@ -311,7 +324,9 @@ export class StoryVoice {
         if (!msg || msg.is_system || (msg.is_user && !s.readUser)) return Promise.resolve(null);
         const hash = this._deepHashOf(msg);
         if (!hash) { this._toast('没法分析这一楼', '没读到这一楼的正文', 'error'); return Promise.resolve(null); }
-        if (!force && this._deepStore()[hash] && !this._deepStore()[hash].manualOnly) return Promise.resolve(this._deepStore()[hash]);
+        // 分析过就一直用这份（之后的修改全是手动的）；只有「重新分析」(force) 才再调副 API
+        const done = this._lineEntry(msg);
+        if (!force && done && !done.manualOnly) return Promise.resolve(done);
         if (this._deepJobs.has(hash)) return this._deepJobs.get(hash);
         const job = (async () => {
             await this._getWechatData().catch(() => null);
@@ -342,7 +357,7 @@ export class StoryVoice {
             if (!parsed) throw new Error('模型没有按格式返回分析结果');
             const out = { at: Date.now(), tone: parsed.tone, arc: parsed.arc, ambience: parsed.ambience || 'none', lines: {} };
             // 分析之前就手动改过的句子（没点「重新分析」覆盖）保留用户的
-            const before = this._deepStore()[hash];
+            const before = this._lineEntry(msg);
             const keepEdited = before && before.manualOnly ? before.lines || {} : {};
             // 自己在 🎭 里选过的情节、环境声，重新分析也保留
             if (before?.ambienceSet) { out.ambience = before.ambience; out.ambienceSet = true; }
@@ -366,7 +381,7 @@ export class StoryVoice {
         }).finally(() => {
             this._deepJobs.delete(hash);
             this.processById(id);
-            if (this.getSettings().deepAuto && this._deepStore()[hash]) setTimeout(() => this._prefetchAfterDeep(id).catch(() => null), 60);
+            if (this.getSettings().deepAuto && this._lineEntry(msg)) setTimeout(() => this._prefetchAfterDeep(id).catch(() => null), 60);
         });
         return job;
     }
@@ -778,7 +793,7 @@ export class StoryVoice {
             ${names.length ? `<div class="yzsv-pop-names" style="margin-top:0">${names.map(n => `<button type="button" data-name="${esc(n)}" class="${n === cur ? 'is-on' : ''}">${esc(n)}</button>`).join('')}</div>` : '<div class="yzsv-pop-empty" style="margin-top:0">还没有填过音色的人：在微信私聊的「聊天设置 → 专属音色」里填音色ID</div>'}
             ${this.getSettings().npcMode === 'npc' ? `<div class="yzsv-pop-names"><button type="button" data-gender="m">按男声 NPC 读</button><button type="button" data-gender="f">按女声 NPC 读</button></div>` : ''}
             <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>
-            <div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 调这句的演法</button><button type="button" data-fav="1">${this._isFav(bar.dataset.speaker || '', bar.dataset.text || '') ? '☆ 取消收藏' : '⭐ 收藏这句语音'}</button></div>`;
+            <div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 调这句的演法</button><button type="button" data-fav="1">${this._isFav(bar.dataset.speaker || '', bar.dataset.text || '') ? '⭐ 再收藏现在这一版' : '⭐ 收藏这句语音'}</button></div>`;
         document.body.appendChild(pop);
         const r = btn.getBoundingClientRect();
         const w = Math.min(280, window.innerWidth - 16);
@@ -1134,7 +1149,7 @@ export class StoryVoice {
             bar.dataset.mesid = String(id);
             bar.dataset.line = String(r.index);
             this._lineContext.set(`${id}:${r.index}`, full.slice(Math.max(0, r.start - 120), r.start) + '【' + full.slice(r.start, r.end) + '】' + full.slice(r.end, r.end + 30));
-            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play${this._isFav(bar.dataset.speaker || '', r.text) ? ' is-fav' : ''}" title="播放（${esc(bar.dataset.speaker || '默认音色')}）；长按收藏 / 取消收藏">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成（长按：选说话人）">↻</button>${live || !s.lineEdit ? '' : `<button type="button" class="yzsv-btn yzsv-cfg${r.deep && lineEntry?.lines?.[r.text]?.edited ? ' is-edited' : ''}" title="调这句的演法（情绪、语速、语气词…）">🎭</button>`}`;
+            bar.innerHTML = `<button type="button" class="yzsv-btn yzsv-play${this._isFav(bar.dataset.speaker || '', r.text) ? ' is-fav' : ''}" title="播放（${esc(bar.dataset.speaker || '默认音色')}）；长按收藏这一版（删除去「语音收藏」里）">▶</button><button type="button" class="yzsv-btn yzsv-regen" title="重新生成（长按：选说话人）">↻</button>${live || !s.lineEdit ? '' : `<button type="button" class="yzsv-btn yzsv-cfg${r.deep && lineEntry?.lines?.[r.text]?.edited ? ' is-edited' : ''}" title="调这句的演法（情绪、语速、语气词…）">🎭</button>`}`;
             const range = document.createRange();
             range.setStart(entry.node, offset);
             range.collapse(true);
@@ -1776,33 +1791,47 @@ export class StoryVoice {
 
     _isFav(speaker, text) { return !!this._favKeys?.has(`${speaker}\u0001${text}`); }
 
-    // 长按 ▶：没收藏就收藏，已经收藏了就取消
+    // 这一版语音的标识：同一句、同样的演法、同一个音色 = 同一版
+    _favSig(bar) {
+        const d = this._barDeep(bar) || {};
+        const vi = this._voiceForSync(bar.dataset.speaker || '');
+        return `${this.takeSig(bar.dataset.speaker || '', d.s || '', d.t || 0, d.p || 'normal')}\u0001${this._providerFor(vi)}\u0001${vi.voice || ''}\u0001${bar.dataset.cue || ''}`;
+    }
+
+    // 收藏一份音频（编辑面板里的试听版本也走这里）
+    async saveFavorite({ text = '', speaker = '', blob, rate = 1, sig = '' } = {}) {
+        if (sig) {
+            const dup = (await favStore.all()).find(x => x.source === 'story' && x.text === text && x.speaker === speaker && x.sig === sig);
+            if (dup) { this._toast('这版已经收藏过了', '要删的话去「语音收藏」里删'); return { ...dup, _dup: true }; }
+        }
+        const chat = String(window.SillyTavern?.getContext?.()?.name2 || '');
+        const rec = await favStore.add({ text, speaker, source: 'story', chat, blob, rate, sig, tags: [] });
+        this._favKeys = this._favKeys || new Set();
+        this._favKeys.add(`${speaker}\u0001${text}`);
+        document.querySelectorAll('#chat .yzsv-bar').forEach(b => { if (b.dataset.text === text && (b.dataset.speaker || '') === speaker) b.querySelector('.yzsv-play')?.classList.add('is-fav'); });
+        this._toast('已收藏 ⭐', `${speaker ? `${speaker}：` : ''}${text.slice(0, 30)}（收藏的语音单独保存，换了演法也不会丢；删除去「语音收藏」里）`, 'success');
+        return rec;
+    }
+
+    // 长按 ▶：收藏现在这一版（同一句可以收藏好几版；不会在这里取消，删除只在「语音收藏」里）
     async favoriteBar(bar) {
         try {
             const text = bar.dataset.text || '';
             const speaker = bar.dataset.speaker || '';
-            const had = await favStore.find(text, speaker, 'story');
-            if (had) {
-                await favStore.remove(had.id);
-                this._favKeys?.delete(`${speaker}\u0001${text}`);
-                bar.querySelector('.yzsv-play')?.classList.remove('is-fav');
-                this._toast('已取消收藏', `${speaker ? `${speaker}：` : ''}${text.slice(0, 30)}`);
-                return;
-            }
-            this._toast('正在收藏…', '把这句语音存到本地');
+            const sig = this._favSig(bar);
             const deep = this._barDeep(bar);
-            const { vi, parts } = this._lineJob(await this._voiceFor(speaker), text, bar.dataset.cue || '', deep);
-            const urls = await Promise.all(parts.map(part => this._synthRetry(part, vi, {})));
-            const joined = await this._joinAudio(urls);
+            this._toast('正在收藏…', '把这句语音存到本地');
+            // 编辑面板里选定的那版就收藏那版，否则用缓存 / 生成
+            let joined = this._pinnedFor(bar);
+            if (!joined) {
+                const { vi, parts } = this._lineJob(await this._voiceFor(speaker), text, bar.dataset.cue || '', deep);
+                const urls = await Promise.all(parts.map(part => this._synthRetry(part, vi, {})));
+                joined = await this._joinAudio(urls);
+            }
             const blobs = await Promise.all(joined.map(u => fetch(u).then(r => r.blob())));
             const blob = blobs.length === 1 ? blobs[0] : new Blob(blobs, { type: blobs[0]?.type || 'audio/mpeg' });
-            const chat = String(window.SillyTavern?.getContext?.()?.name2 || '');
-            const rec = await favStore.add({ text, speaker, source: 'story', chat, blob, rate: PACE_SPEED[deep?.p] || 1, tags: [] });
-            this._favKeys = this._favKeys || new Set();
-            this._favKeys.add(`${speaker}\u0001${text}`);
-            bar.querySelector('.yzsv-play')?.classList.add('is-fav');
-            this._toast('已收藏 ⭐', `${speaker ? `${speaker}：` : ''}${text.slice(0, 30)}（再长按一次取消）`, 'success');
-            this._askTags(rec, bar.querySelector('.yzsv-play'));
+            const rec = await this.saveFavorite({ text, speaker, blob, rate: PACE_SPEED[deep?.p] || 1, sig });
+            if (rec && !rec._dup) this._askTags(rec, bar.querySelector('.yzsv-play'));
         } catch (err) {
             this._toast('收藏失败', String(err?.message || err).slice(0, 120), 'error');
         }
@@ -2040,6 +2069,47 @@ export class StoryVoice {
         this.playBars(bars, { trigger });
     }
 
+    // ---------- 🎭 面板的试听对比：按草稿生成一版（不保存），可以反复生成、来回对比，保存时只留选中的那版 ----------
+    takeSig(speaker = '', s = '', t = 0, p = 'normal') { return `${speaker}\u0001${s || ''}\u0001${Number(t) || 0}\u0001${p || 'normal'}`; }
+
+    async synthDraft(bar, { speaker = '', script = '', t = 0, pace = 'normal' } = {}, { signal } = {}) {
+        const text = bar.dataset.text || '';
+        const s = script && script !== text ? script : '';
+        const vi0 = await this._voiceFor(speaker);
+        const { vi, parts } = this._lineJob(vi0, text, '', { s, t, p: pace });
+        const urls = await Promise.all(parts.map(part => this._synthRetry(part, vi, { regen: true, signal })));
+        const joined = await this._joinAudio(urls);
+        // 复制一份自己的音频：缓存满了被回收也不影响对比
+        const own = [];
+        for (const u of joined) { try { own.push(URL.createObjectURL(await (await fetch(u)).blob())); } catch (e) { own.push(u); } }
+        return { urls: own, rate: PACE_SPEED[pace] || 1, sig: this.takeSig(speaker, s, t, pace) };
+    }
+
+    async playTake(urls = [], rate = 1) {
+        this.stop();
+        const run = { bars: [], trigger: null, abort: new AbortController() };
+        this.playing = run;
+        try { for (const u of urls) { if (this.playing !== run) return; await this._playUrl(u, run, rate); } }
+        finally { if (this.playing === run) this.stop(); }
+    }
+
+    // 保存时选中的那版：之后点 ▶ 直接播它（演法又改了就不用它）
+    pinTake(mesid, line, sig, urls) {
+        this._pinned = this._pinned || new Map();
+        const k = `${mesid}:${line}`;
+        const old = this._pinned.get(k);
+        if (old && old.urls !== urls) old.urls.forEach(u => { if (!urls.includes(u)) this._safeRevoke(u); });
+        this._pinned.set(k, { sig, urls });
+        this._forceFresh?.delete(k);
+    }
+
+    _pinnedFor(bar) {
+        const p = this._pinned?.get(`${bar.dataset.mesid}:${bar.dataset.line}`);
+        if (!p) return null;
+        const d = this._barDeep(bar) || {};
+        return p.sig === this.takeSig(bar.dataset.speaker || '', d.s || '', d.t || 0, d.p || 'normal') ? p.urls : null;
+    }
+
     // 这句在 🎭 里手动改过（或者正在编辑面板里试听）：只按手动的读，不去分析整楼
     _barEdited(bar) {
         try {
@@ -2100,7 +2170,7 @@ export class StoryVoice {
             if (i >= queue.length || jobs[i]) return;
             const q = queue[i];
             // 刚重新生成好的：直接用那份，不再去缓存里找（保证播的是新的）
-            const ready = prepared?.[String(q.bar.dataset.line)];
+            const ready = prepared?.[String(q.bar.dataset.line)] || (!regen && this._pinnedFor(q.bar));
             jobs[i] = ready ? Promise.resolve(ready) : Promise.all(q.parts.map(part => this._synthRetry(part, q.voice, { regen: regen || q.fresh, signal: abort.signal })))
                 .then(urls => this._joinAudio(urls));
             jobs[i].catch(() => {});
@@ -2764,7 +2834,9 @@ export class StoryVoiceApp {
             card.querySelector('[data-fav-del]')?.addEventListener('click', async () => {
                 if (!window.confirm('删除这条收藏？')) return;
                 await favStore.remove(rec.id);
-                this.sv._favKeys?.delete(`${rec.speaker}\u0001${rec.text}`);
+                // 同一句还有别的收藏版本时，正文里的 ★ 留着
+                const left = (await favStore.all()).some(x => x.speaker === rec.speaker && x.text === rec.text);
+                if (!left) this.sv._favKeys?.delete(`${rec.speaker}\u0001${rec.text}`);
                 this.sv.refreshAll();
                 rerender();
             });

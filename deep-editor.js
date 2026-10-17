@@ -1,6 +1,6 @@
 // 原有手机插件 · 正文朗读：查看 / 编辑深度分析结果
 // 点楼层下面的「🎭 …」打开：逐句看模型给的说话人、张力、语速、演法（带标签的台词）和理由，
-// 可以直接改；改完点 ▶ 就按改后的演法单独调用一次 Fish 生成（不会再调用分析模型）。
+// 可以直接改；点「生成一版试听」按草稿生成一版（不调用分析模型），可以反复生成对比，保存时只留选中的那版。
 
 import { AMBIENCE_LABELS, startAmbience } from './ambience.js';
 import { fitTags, MM_EMOTION_TAGS, MM28_SOUND_TAGS } from './tts-adapt.js';
@@ -217,6 +217,17 @@ function injectStyle() {
 .yzsv-ed-ch.is-plain span { color: #a8803a; }
 .yzsv-ed-prev { margin-top: 6px; padding: 6px 9px; border-radius: 9px; border: 1px dashed #d5dbe8; background: #f8f9fc; font-size: 11.5px; line-height: 1.55; color: #556; word-break: break-all; }
 .yzsv-ed-prev b { color: #334; font-weight: 600; }
+.yzsv-ed-takes { margin-top: 8px; padding: 8px; border-radius: 11px; background: #f6f3fd; border: 1px solid #e6def7; }
+.yzsv-ed-takes[hidden] { display: none; }
+.yzsv-ed-takes .hd { font-size: 11.5px; color: #8a7fa8; margin: 0 2px 6px; line-height: 1.45; }
+.yzsv-ed-take { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 9px; background: #fff; border: 1px solid transparent; margin-top: 4px; }
+.yzsv-ed-take.is-sel { border-color: #a18cd1; box-shadow: 0 0 0 2px rgba(161,140,209,.18); }
+.yzsv-ed-take span { flex: 1; min-width: 0; font-size: 12px; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yzsv-ed-take span b { color: #6b54a8; font-weight: 600; margin-right: 4px; }
+.yzsv-ed-take button { flex: 0 0 auto; border: 0; border-radius: 8px; padding: 4px 9px; font-size: 12px; cursor: pointer; font-family: inherit; background: #f1eefa; color: #6b54a8; }
+.yzsv-ed-take button[data-take-play].is-playing { background: #a18cd1; color: #fff; }
+.yzsv-ed-take.is-sel button[data-take-use] { background: #a18cd1; color: #fff; }
+.yzsv-ed-take button[data-take-del] { background: transparent; color: #bbb; padding: 4px 6px; }
 `;
     document.head.appendChild(st);
 }
@@ -281,8 +292,9 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             <div class="yzsv-ed-set"><span>语速</span><div class="yzsv-ed-seg" data-k="pace">${PACES.map(([k, l]) => `<button type="button" data-v="${k}" class="${k === pace ? 'is-on' : ''}">${l}</button>`).join('')}</div></div>
             <div class="yzsv-ed-prev"></div>
             <div class="yzsv-ed-tools">${toolsHtml(prof, text, v)}</div>
+            <div class="yzsv-ed-acts"><button type="button" class="yzsv-ed-play">▶ 生成一版试听</button><button type="button" class="yzsv-ed-reset">去掉标签</button></div>
+            <div class="yzsv-ed-takes" hidden></div>
             <div class="yzsv-ed-sent" hidden></div>
-            <div class="yzsv-ed-acts"><button type="button" class="yzsv-ed-play">▶ 按这样生成并播放</button><button type="button" class="yzsv-ed-reset">去掉标签</button></div>
         </div>`;
     };
 
@@ -295,7 +307,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 <b>${single ? '🎭 这句的演法' : analyzed ? '🎭 深度分析结果' : '🎭 逐句调整演法'}</b> <small class="yzsv-ed-nsfw" ${curTone === '亲密' ? '' : 'hidden'}>NSFW</small>
                 <div class="yzsv-ed-amb">🎬 这一楼的情节<select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === curTone ? 'selected' : ''}>${x ? (x === '亲密' ? '亲密（NSFW）' : x) : '没判断'}</option>`).join('')}</select>${analyzed && !single ? `<input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向" style="flex:1;min-width:0;border:1px solid #e3e3ea;border-radius:9px;padding:5px 8px;font-size:13px;background:#f8f8fb;">` : ''}</div>
                 <div class="yzsv-ed-amb">🌧 这一楼开头的环境声<select class="yzsv-ed-ambsel">${Object.entries(AMBIENCE_LABELS).map(([k, l]) => `<option value="${k}" ${k === (entry.ambience || 'none') ? 'selected' : ''}>${l}</option>`).join('')}</select><button type="button" class="yzsv-ed-ambtry" style="border:0;background:#f1f1f5;border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;">试听</button></div>
-                <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高情绪越强；语速在播放时直接变快变慢（不用重新生成）。每句上面写了这个人用的渠道和它认什么：不同渠道下面能选的选项不一样，虚线框里是实际会发过去的内容。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。改完点 ▶ 只会调用语音接口重新生成这一句（不会再调用分析模型），生成中再点一下可以取消。</div>
+                <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高情绪越强；语速在播放时直接变快变慢（不用重新生成）。每句上面写了这个人用的渠道和它认什么：不同渠道下面能选的选项不一样，虚线框里是实际会发过去的内容。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。点「生成一版试听」只调用语音接口生成这一句（不会调用分析模型），可以反复生成、来回对比，保存时只留选中的那版。</div>
             </div>
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
             <div class="yzsv-ed-foot"><button type="button" class="ghost yzsv-ed-cancel">关闭</button><button type="button" class="primary yzsv-ed-save">${single ? '保存' : '保存全部'}</button></div>
@@ -325,7 +337,11 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         if (!r.amb) delete next.amb;
         const changed = ['role', 'pace', 't', 's', 'amb'].some(k => String(next[k] ?? '') !== String(old[k] ?? ''));
         if (changed || !old.edited) { next.edited = true; entry.lines[r.text] = next; row.classList.add('is-edited'); }
-        sv.markFresh(mesid, r.line); // 改过就丢掉这句的旧语音，下次播放一定重新生成
+        // 选了试听里的某一版：以后就播这版；否则丢掉这句的旧语音，下次播放重新生成
+        const take = Number.isInteger(row._chosen) ? row._takes?.[row._chosen] : null;
+        const sig = sv.takeSig(r.speaker, script, r.t, r.pace);
+        if (take && take.sig === sig) { sv.pinTake(mesid, r.line, sig, take.urls); take.kept = true; }
+        else sv.markFresh(mesid, r.line);
         row._dirty = false;
         const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(r.line)}"]`);
         if (bar && r.speaker && r.speaker !== (bar.dataset.speaker || '')) sv._saveOverride(bar, r.speaker);
@@ -355,7 +371,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
     // 动过哪句就记哪句（输入、点选项、改说话人）
     mask.querySelectorAll('.yzsv-ed-line').forEach(row => {
         row.addEventListener('input', () => { row._dirty = true; });
-        row.addEventListener('click', (e) => { if (e.target.closest('button') && !e.target.closest('.yzsv-ed-tabs, .yzsv-ed-play')) row._dirty = true; });
+        row.addEventListener('click', (e) => { if (e.target.closest('button') && !e.target.closest('.yzsv-ed-tabs, .yzsv-ed-play, .yzsv-ed-takes')) row._dirty = true; });
     });
     // 每句：记住说话人的渠道，实时预览发过去的内容；改了说话人就换成那个人渠道的选项
     const prevHtml = (row) => {
@@ -367,7 +383,34 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         } catch (e) { return ''; }
     };
     const refreshPrev = (row) => { const box = row.querySelector('.yzsv-ed-prev'); if (box) box.innerHTML = prevHtml(row); };
+    // 试听对比：每生成一版就记一版，可以来回播、选一版；保存时只留选中的，关掉不保存就全丢
+    const PACE_L = Object.fromEntries(PACES);
+    const setRow = (row, v) => {
+        row.querySelector('.yzsv-ed-spk').value = v.speaker;
+        row.querySelector('.yzsv-ed-script').value = v.script || row.dataset.text;
+        const setSeg = (k, val) => row.querySelectorAll(`.yzsv-ed-seg[data-k="${k}"] button`).forEach(b => b.classList.toggle('is-on', String(b.dataset.v) === String(val)));
+        setSeg('t', v.t);
+        setSeg('pace', v.pace);
+        refreshPrev(row);
+    };
+    const renderTakes = (row) => {
+        const box = row.querySelector('.yzsv-ed-takes');
+        const takes = row._takes || [];
+        box.hidden = !takes.length;
+        if (!takes.length) { box.innerHTML = ''; return; }
+        const faved = (key) => key !== 'orig' && takes[key]?.fav;
+        const item = (key, label, sel) => `<div class="yzsv-ed-take${sel ? ' is-sel' : ''}"><button type="button" data-take-play="${key}">▶</button><span>${label}</span><button type="button" data-take-fav="${key}" title="收藏这版（单独保存，删除去「语音收藏」里）">${faved(key) ? '★' : '☆'}</button><button type="button" data-take-use="${key}">${sel ? '✓ 选中' : '用这版'}</button>${key === 'orig' ? '' : `<button type="button" data-take-del="${key}" title="删掉这版">✕</button>`}</div>`;
+        box.innerHTML = `<div class="hd">试听对比：可以反复生成、来回听，选一版。点「保存」时只留选中的那版（以后 ▶ 就播它），其余的清掉；不保存直接关掉就全部丢掉。点 ☆ 收藏的版本单独保存，不会被清掉，只能在「语音收藏」里删。</div>`
+            + item('orig', '<b>原来的</b>改之前的演法', row._chosen === 'orig')
+            + takes.map((tk, i) => tk ? item(i, `<b>#${i + 1}</b>张力 ${tk.t} · ${esc(PACE_L[tk.pace] || tk.pace)} · ${esc(tk.script || row.dataset.text)}`, row._chosen === i) : '').join('');
+    };
+    const dropTakes = () => {
+        mask.querySelectorAll('.yzsv-ed-line').forEach(row => (row._takes || []).forEach(tk => { if (tk && !tk.kept) tk.urls.forEach(u => sv._safeRevoke(u)); }));
+    };
     mask.querySelectorAll('.yzsv-ed-line').forEach(row => {
+        row._orig = read(row);
+        row._takes = [];
+        row._chosen = null;
         row._prof = profOf(row.querySelector('.yzsv-ed-spk').value.trim());
         refreshPrev(row);
         let tm = null;
@@ -463,9 +506,16 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         if (b) b.hidden = ev.target.value !== '亲密';
     });
     let trial = null;
-    const close = () => { trial?.stop(); mask.remove(); };
+    const close = () => { trial?.stop(); sv.stop(); dropTakes(); mask.remove(); };
     mask.addEventListener('click', async (e) => {
-        if (e.target === mask || e.target.closest('.yzsv-ed-close, .yzsv-ed-cancel')) { saveAll(); close(); return; }
+        if (e.target === mask || e.target.closest('.yzsv-ed-close, .yzsv-ed-cancel')) {
+            const rows = Array.from(mask.querySelectorAll('.yzsv-ed-line'));
+            const pending = rows.some(r => r._dirty || (r._takes || []).some(Boolean));
+            if (pending && !window.confirm('这次改的还没保存。\n确定 = 保存（试听只留选中的那版）\n取消 = 不保存，改动和试听都丢掉')) { close(); return; }
+            saveAll();
+            close();
+            return;
+        }
         if (e.target.closest('.yzsv-ed-save')) {
             const n = saveAll();
             const total = mask._saved || 0;
@@ -553,51 +603,104 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             refreshPrev(row);
             return;
         }
+        const tp = e.target.closest('[data-take-play]');
+        if (tp) {
+            const key = tp.dataset.takePlay;
+            if (tp.classList.contains('is-playing')) { sv.stop(); tp.classList.remove('is-playing'); return; }
+            mask.querySelectorAll('[data-take-play].is-playing').forEach(x => x.classList.remove('is-playing'));
+            tp.classList.add('is-playing');
+            try {
+                if (key === 'orig') {
+                    const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(row.dataset.line)}"]`);
+                    if (bar) await sv.playBars([bar], { noDeep: true }); // 播保存着的那版（有缓存就不重新请求）
+                } else {
+                    const tk = row._takes[Number(key)];
+                    if (tk) await sv.playTake(tk.urls, tk.rate);
+                }
+            } catch (err) { sv._toast('播放失败', String(err?.message || err).slice(0, 120), 'error'); }
+            finally { tp.classList.remove('is-playing'); }
+            return;
+        }
+        const tf = e.target.closest('[data-take-fav]');
+        if (tf) {
+            const key = tf.dataset.takeFav;
+            const r = read(row);
+            try {
+                if (key === 'orig') {
+                    const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(row.dataset.line)}"]`);
+                    if (bar) await sv.favoriteBar(bar);
+                } else {
+                    const tk = row._takes[Number(key)];
+                    if (!tk) return;
+                    const blobs = await Promise.all(tk.urls.map(u => fetch(u).then(x => x.blob())));
+                    const blob = blobs.length === 1 ? blobs[0] : new Blob(blobs, { type: blobs[0]?.type || 'audio/mpeg' });
+                    await sv.saveFavorite({ text: row.dataset.text, speaker: tk.speaker || r.speaker, blob, rate: tk.rate, sig: `take\u0001${tk.sig}\u0001${tk.urls.join('|')}` });
+                    tk.fav = true;
+                    renderTakes(row);
+                }
+            } catch (err) { sv._toast('收藏失败', String(err?.message || err).slice(0, 120), 'error'); }
+            return;
+        }
+        const tu = e.target.closest('[data-take-use]');
+        if (tu) {
+            const key = tu.dataset.takeUse;
+            if (key === 'orig') { setRow(row, row._orig); row._chosen = 'orig'; row._dirty = false; }
+            else { const tk = row._takes[Number(key)]; if (!tk) return; setRow(row, tk); row._chosen = Number(key); row._dirty = true; }
+            renderTakes(row);
+            return;
+        }
+        const td = e.target.closest('[data-take-del]');
+        if (td) {
+            const i = Number(td.dataset.takeDel);
+            const tk = row._takes[i];
+            if (tk) tk.urls.forEach(u => sv._safeRevoke(u));
+            row._takes[i] = null; // 留空位，编号不变
+            if (row._chosen === i) row._chosen = null;
+            if (!row._takes.some(Boolean)) row._takes = [];
+            renderTakes(row);
+            return;
+        }
         const play = e.target.closest('.yzsv-ed-play');
         if (play) {
-            // 生成中 / 播放中再点一下 = 取消
+            // 生成中再点一下 = 取消
             if (play.classList.contains('is-busy')) {
-                play._cancelled = true;
-                play._run = (play._run || 0) + 1; // 让旧的那次结束时不再动按钮
-                sv.stop();
-                clearInterval(play._tick);
-                play.classList.remove('is-busy');
-                play.textContent = '▶ 按这样生成并播放';
-                sv._toast('已取消', '这句没有继续生成 / 播放');
+                play._abort?.abort();
                 return;
             }
             sv._unlockAudio();
-            saveAll();
-            const line = row.dataset.line;
-            const findBar = () => document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(line)}"]`);
-            const bar = findBar();
+            const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(row.dataset.line)}"]`);
             if (!bar) { sv._toast('找不到这一句', '正文可能刷新了，关掉再打开试试'); return; }
+            const r = read(row);
+            const draft = { speaker: r.speaker, script: r.script, t: r.t, pace: r.pace };
+            const ctl = new AbortController();
+            play._abort = ctl;
             play.classList.add('is-busy');
-            play._cancelled = false;
-            const run = (play._run = (play._run || 0) + 1);
-            const label = () => { play.textContent = findBar()?.classList.contains('is-playing') ? '■ 播放中（点一下停止）' : '■ 生成中…（点一下取消）'; };
-            label();
-            clearInterval(play._tick);
-            play._tick = setInterval(label, 250);
             const t0 = Date.now();
-            const showSent = () => {
+            const tick = setInterval(() => { play.textContent = `■ 生成中 ${Math.floor((Date.now() - t0) / 1000)}s（点一下取消）`; }, 250);
+            try {
+                const res = await sv.synthDraft(bar, draft, { signal: ctl.signal });
+                if (ctl.signal.aborted) return;
+                row._takes.push({ ...draft, ...res, script: draft.script && draft.script !== row.dataset.text ? draft.script : '' });
+                row._chosen = row._takes.length - 1; // 新生成的这版默认选中
+                row._dirty = true;
+                renderTakes(row);
+                // 实际发给语音接口的内容
                 const box = row.querySelector('.yzsv-ed-sent');
                 const log = (sv._sentLog || []).filter(x => x.at >= t0);
-                if (!box || !log.length) return;
-                const amb = (() => { try { return sv._floorAmbience(mesid).get(String(line)) || 'none'; } catch (err) { return 'none'; } })();
-                box.hidden = false;
-                box.innerHTML = log.map(x => `<div><b>${x.cached ? '用了缓存（和上次发的一模一样，没有重新请求）' : '已清掉旧语音，重新生成'}</b> · ${esc(x.provider || '?')}${x.model ? ` / ${esc(x.model)}` : ''}${x.fish?.temperature ? ` · 温度 ${x.fish.temperature}` : ''}${x.extra ? ` · ${esc(JSON.stringify(x.extra))}` : ''}</div><div>实际发送：${esc(x.text)}</div>`).join('')
-                    + `<div>环境声：${amb === 'none' ? '无' : esc(AMBIENCE_LABELS[amb] || amb)}${amb !== 'none' ? '（环境声是另外叠的，听着不对可以先在设置里关掉对比）' : ''}</div>`;
-            };
-            try {
-                await sv.playBars([bar], { trigger: bar.querySelector('.yzsv-play'), regen: true, noDeep: true }); // 手动调的这一句：不调用分析模型 // 面板里点生成：每次都清掉旧的重新请求
+                if (box && log.length) { box.hidden = false; box.innerHTML = log.map(x => `<div><b>实际发送</b> · ${esc(x.provider || '?')}${x.model ? ` / ${esc(x.model)}` : ''}${x.fish?.temperature ? ` · 温度 ${x.fish.temperature}` : ''}${x.extra ? ` · ${esc(JSON.stringify(x.extra))}` : ''}</div><div>${esc(x.text)}</div>`).join(''); }
+                clearInterval(tick);
+                play.textContent = '▶ 再生成一版';
+                play.classList.remove('is-busy');
+                const tp2 = row.querySelector(`[data-take-play="${row._chosen}"]`);
+                tp2?.classList.add('is-playing');
+                await sv.playTake(res.urls, res.rate).catch(() => null);
+                tp2?.classList.remove('is-playing');
+            } catch (err) {
+                if (!ctl.signal.aborted && err?.name !== 'AbortError') sv._toast('生成失败', String(err?.message || err).slice(0, 140), 'error');
+                else sv._toast('已取消', '这一版没有生成');
             } finally {
-                showSent();
-                if (play._run === run) {
-                    clearInterval(play._tick);
-                    play.classList.remove('is-busy');
-                    play.textContent = '▶ 按这样生成并播放';
-                }
+                clearInterval(tick);
+                if (play.classList.contains('is-busy')) { play.classList.remove('is-busy'); play.textContent = row._takes.length ? '▶ 再生成一版' : '▶ 生成一版试听'; }
             }
         }
     });
