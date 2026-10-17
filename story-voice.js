@@ -2291,7 +2291,7 @@ export class StoryVoice {
 .yzsv-input { width: 100%; box-sizing: border-box; border: 1px solid #ececf2; border-radius: 11px; padding: 9px 11px; font-size: 13px; background: #f8f8fb; color: #222; outline: none; }
 .yzsv-input:focus { border-color: #a18cd1; background: #fff; }
 select.yzsv-input { height: 40px; padding: 0 30px 0 11px; line-height: 38px; -webkit-appearance: none; appearance: none; background-image: linear-gradient(45deg, transparent 50%, #999 50%), linear-gradient(135deg, #999 50%, transparent 50%); background-position: calc(100% - 16px) 17px, calc(100% - 11px) 17px; background-size: 5px 5px; background-repeat: no-repeat; text-overflow: ellipsis; }
-.yzsv-api[hidden], .yzsv-deepbox[hidden], .yzsv-mode-note[hidden] { display: none !important; }
+.yzsv-api[hidden], .yzsv-deepbox[hidden], .yzsv-mode-note[hidden], .yzsv-envnote[hidden] { display: none !important; }
 .yzsv-cfg { font-size: .7em; }
 .yzsv-play.is-fav { position: relative; border-color: rgba(255,196,60,.8); box-shadow: 0 0 0 1px rgba(255,196,60,.35) inset; }
 .yzsv-play.is-fav::after { content: '★'; position: absolute; top: -7px; right: -5px; font-size: 10px; color: #ffc43c; text-shadow: 0 0 2px rgba(0,0,0,.6); }
@@ -2549,7 +2549,7 @@ export class StoryVoiceApp {
                             </div>
                             <input type="hidden" data-k="analysisMode" value="${esc(s.analysisMode)}">
                         </div>
-                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写台词时顺手标上 [[名字|语气]]，边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调。</div>
+                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写正文时顺手标上看不见的标记——每句台词前的 [[名字|语气]]，每楼开头的情节 [[基调:xx]]<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，每楼开头和换场景的地方的环境 [[环境:xx]]（xx 是雨声、森林、教室等 41 种之一，none = 安静没有环境声）</span>。边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，环境声也能在 🎭 里改</span>。</div>
                         <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用 Fish 生成这一句。</div>
 
                         <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
@@ -2568,7 +2568,7 @@ export class StoryVoiceApp {
 
                     <div class="yzsv-sec">环境声 · 拟声词</div>
                     <div class="yzsv-card pad">
-                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层雨声、风声、海浪、虫鸣、室内、篝火、人声嘈杂、咖啡馆。深度分析和简单分析按正文场景自动选；手动在 🎭 里给这一楼选', 'padding:0 0 10px;')}
+                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层环境声（雨、雪、森林、海边、街道、教室、咖啡馆等 41 种，WebAudio 实时合成）。简单分析由正文模型标 [[环境:xx]]，深度分析由分析模型判断，手动在 🎭 里给这一楼选；关掉后简单分析也不会再让模型标环境', 'padding:0 0 10px;')}
                         <div class="yzsv-field"><label>环境声音量 <span class="yzsv-ambv">${esc(s.ambienceVol)}</span>%</label><input type="range" min="5" max="80" step="5" class="yzsv-range" data-k="ambienceVol" value="${esc(s.ambienceVol)}"></div>
                         ${sw('autoOno', '自动加拟声词', '简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加', 'padding:0 0 10px;')}
                     </div>
@@ -2882,6 +2882,8 @@ export class StoryVoiceApp {
             const s = this.sv.saveSettings(this._collect());
             const hero = root.querySelector('.yzsv-hero b');
             if (hero) hero.textContent = s.enabled ? '朗读已开启' : '朗读已关闭';
+            // 环境声开关：简单分析的说明里跟着加上 / 去掉环境标记
+            root.querySelectorAll('.yzsv-envnote').forEach(el => { el.hidden = !s.ambienceOn; });
         }));
         root.querySelector('#yzsv-save')?.addEventListener('click', () => {
             const s = this.sv.saveSettings(this._collect());
