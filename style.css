@@ -1,0 +1,14 @@
+/* 正文朗读：设置窗口 */
+.yzr-overlay { position: fixed; inset: 0; z-index: 30000; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+.yzr-overlay[hidden] { display: none !important; }
+.yzr-panel { width: min(440px, 100vw); height: min(860px, 92vh); border-radius: 22px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.35); background: #f6f6fa; }
+@media (max-width: 520px) { .yzr-panel { width: 100vw; height: 100%; border-radius: 0; } .yzr-overlay { align-items: stretch; } }
+.yzr-panel .yzsv-head { padding-top: 10px; }
+.yzr-badge { font-size: 10.5px; color: #fff !important; background: #a18cd1; border-radius: 6px; padding: 0 6px; }
+/* 角色音色库：读音行 */
+.yzrd { display: flex; flex-direction: column; gap: 6px; }
+.yzrd-row { display: flex; align-items: center; gap: 6px; }
+.yzrd-row .yzsv-input { flex: 1; min-width: 0; }
+.yzrd-row i { font-style: normal; color: #aaa; font-size: 12px; flex: 0 0 auto; }
+.yzrd-del { flex: 0 0 26px; height: 26px; border: 0; border-radius: 50%; background: rgba(0,0,0,.06); color: #6a7d92; cursor: pointer; }
+.yzrd-add { align-self: flex-start; height: 30px; padding: 0 12px; border: 1px dashed #b9d7f5; border-radius: 9px; background: transparent; color: #2b6cb0; font-size: 12.5px; cursor: pointer; }
