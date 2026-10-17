@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, DEEP_SCHEMA, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.2.9'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.3.1'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -567,7 +567,8 @@ export class StoryVoice {
     }
 
     // 这一楼每句台词所处的环境声：从楼层开头的开始，遇到「从这句起换」的句子就换
-    _floorAmbience(mid) {
+    // draft：🎭 面板里还没保存的选择 { start: 开头的环境声, lines: Map(台词 → 从这句起换成的环境声，'' = 不变) }
+    _floorAmbience(mid, draft = null) {
         const msg = window.SillyTavern?.getContext?.()?.chat?.[mid];
         const entry = this._lineEntry(msg);
         const map = new Map();
@@ -587,9 +588,13 @@ export class StoryVoice {
         const deep = !!entry && this.getSettings().analysisMode === 'deep' && !entry.manualOnly;
         // 优先级：自己在 🎭 里选的 > 深度分析 > 正文标记
         let cur = (entry && (deep || entry.ambienceSet) && entry.ambience) || '';
+        const startSet = draft?.start !== undefined && draft?.start !== null;
+        if (startSet) cur = draft.start === 'none' ? '' : draft.start;
         bars.forEach((b, i) => {
             const v = entry?.lines?.[b.dataset.text];
-            if (v?.amb && (deep || v.edited || v.ambSet)) cur = v.amb;
+            if (draft?.lines?.has(b.dataset.text)) { const a = draft.lines.get(b.dataset.text); if (a) cur = a === 'none' ? '' : a; }
+            else if (v?.amb && (deep || v.edited || v.ambSet)) cur = v.amb;
+            else if (startSet && i === 0) { /* 面板里改了开头的环境声：第一句不用正文标记盖掉 */ }
             else if (!deep && rawAt.has(b.dataset.text) && !(i === 0 && entry?.ambienceSet)) cur = rawAt.get(b.dataset.text);
             map.set(String(b.dataset.line), cur || 'none');
         });
@@ -2252,10 +2257,15 @@ export class StoryVoice {
         return { urls: own, rate: PACE_SPEED[pace] || 1, sig: this.takeSig(speaker, s, t, pace) };
     }
 
-    async playTake(urls = [], rate = 1) {
+    async playTake(urls = [], rate = 1, { amb = '' } = {}) {
         this.stop();
         const run = { bars: [], trigger: null, abort: new AbortController() };
         this.playing = run;
+        // 试听也垫上这句所在场景的环境声（按面板里现在选的，没保存也算）
+        if (amb && amb !== 'none') {
+            if (this.getSettings().ambienceOn) this._amb = startAmbience(amb, (Number(this.getSettings().ambienceVol) || 30) / 100);
+            else if (!this._ambOffTold) { this._ambOffTold = true; this._toast('环境声没开', '设置 → 情绪分析 里打开「环境声」才会垫上'); }
+        }
         try { for (const u of urls) { if (this.playing !== run) return; await this._playUrl(u, run, rate); } }
         finally { if (this.playing === run) this.stop(); }
     }
@@ -2874,7 +2884,7 @@ export class StoryVoiceApp {
                             </div>
                             <input type="hidden" data-k="analysisMode" value="${esc(s.analysisMode)}">
                         </div>
-                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写正文时顺手标上看不见的标记——每句台词前的 [[名字|语气]]，每楼开头的情节 [[基调:xx]]<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，每楼开头和换场景的地方的环境 [[环境:xx]]（xx 是雨声、森林、教室等 41 种之一，none = 安静没有环境声）</span>。边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，环境声也能在 🎭 里改</span>。</div>
+                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写正文时顺手标上看不见的标记——每句台词前的 [[名字|语气]]，每楼开头的情节 [[基调:xx]]<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，每楼开头和换场景的地方的环境 [[环境:xx]]（xx 是雨声、森林、教室等 42 种之一，none = 安静没有环境声）</span>。边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，环境声也能在 🎭 里改</span>。</div>
                         <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用这个人用的语音渠道重新生成这一句（Fish、MiniMax、OpenAI、豆包……会自动换成各自认的写法）。</div>
 
                         <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
@@ -2899,7 +2909,7 @@ export class StoryVoiceApp {
 
                     <div class="yzsv-sec">环境声 · 拟声词</div>
                     <div class="yzsv-card pad">
-                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层环境声（雨、雪、森林、海边、街道、教室、咖啡馆等 41 种，WebAudio 实时合成）。简单分析由正文模型标 [[环境:xx]]，深度分析由分析模型判断，手动在 🎭 里给这一楼选；关掉后简单分析也不会再让模型标环境', 'padding:0 0 10px;')}
+                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层环境声（雨、雪、森林、海边、街道、教室、咖啡馆、烟花等 42 种，WebAudio 实时合成）。简单分析由正文模型标 [[环境:xx]]，深度分析由分析模型判断，手动在 🎭 里给这一楼选；关掉后简单分析也不会再让模型标环境', 'padding:0 0 10px;')}
                         <div class="yzsv-field"><label>环境声音量 <span class="yzsv-ambv">${esc(s.ambienceVol)}</span>%</label><input type="range" min="5" max="80" step="5" class="yzsv-range" data-k="ambienceVol" value="${esc(s.ambienceVol)}"></div>
                         ${sw('autoOno', '自动加拟声词', '简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加', 'padding:0 0 10px;')}
                     </div>

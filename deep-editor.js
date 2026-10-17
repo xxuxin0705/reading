@@ -380,12 +380,14 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         let n = 0;
         mask.querySelectorAll('.yzsv-ed-line').forEach(row => { if (saveRow(row)) n += 1; });
         mask._saved = (mask._saved || 0) + n;
+        const what = n ? [`${n} 句演法`] : [];
         const amb = mask.querySelector('.yzsv-ed-ambsel');
-        if (amb && amb.value !== (entry.ambience || 'none')) { entry.ambience = amb.value; entry.ambienceSet = true; n += 1; }
+        if (amb && amb.value !== (entry.ambience || 'none')) { entry.ambience = amb.value; entry.ambienceSet = true; n += 1; what.push('开头的环境声'); }
         const tone = mask.querySelector('.yzsv-ed-tone');
         const arc = mask.querySelector('.yzsv-ed-arc');
-        if (tone && tone.value !== curTone) { entry.tone = tone.value; entry.toneSet = true; n += 1; }
-        if (arc && arc.value.trim() !== (entry.arc || '')) { entry.arc = arc.value.trim(); n += 1; }
+        if (tone && tone.value !== curTone) { entry.tone = tone.value; entry.toneSet = true; n += 1; what.push('这一楼的情节'); }
+        if (arc && arc.value.trim() !== (entry.arc || '')) { entry.arc = arc.value.trim(); n += 1; what.push('情绪走向'); }
+        mask._what = what;
         if (n || analyzed) { entry.at = Date.now(); sv._deepSave(sv._deepHashOf(msg), entry); }
         sv.processById(mesid);
         return n;
@@ -438,6 +440,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
     };
     mask.querySelectorAll('.yzsv-ed-line').forEach(row => {
         row._orig = read(row);
+        row._ambInit = row.querySelector('.yzsv-ed-lineambsel')?.value || '';
         row._takes = [];
         row._chosen = null;
         row._prof = profOf(row.querySelector('.yzsv-ed-spk').value.trim());
@@ -550,6 +553,17 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         const b = mask.querySelector('.yzsv-ed-nsfw');
         if (b) b.hidden = ev.target.value !== '亲密';
     });
+    // 面板里现在选的环境声（没保存也算）：试听时按它垫
+    const ambDraft = () => {
+        const head = mask.querySelector('.yzsv-ed-ambsel');
+        const lines = new Map();
+        mask.querySelectorAll('.yzsv-ed-line').forEach(r => {
+            const v = r.querySelector('.yzsv-ed-lineambsel')?.value || '';
+            if (v !== r._ambInit) lines.set(r.dataset.text, v);
+        });
+        return { start: head && head.value !== (entry.ambience || 'none') ? head.value : null, lines };
+    };
+    const ambAt = (row) => { try { return sv._floorAmbience(mesid, ambDraft()).get(String(row.dataset.line)) || ''; } catch (err) { return ''; } };
     // 一句收起时只留一行：说话人 + 演法 + 张力 / 语速
     const setFold = (row, fold) => {
         row.classList.toggle('is-folded', fold);
@@ -574,8 +588,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         }
         if (e.target.closest('.yzsv-ed-save')) {
             const n = saveAll();
-            const total = mask._saved || 0;
-            sv._toast('已保存', total ? `改了 ${total} 句，点 ▶ 会按新的演法生成` : '没有改动', 'success');
+            const what = mask._what || [];
+            sv._toast('已保存', n ? `改了${what.join('、')}，点 ▶ 就按新的读` : '没有改动', 'success');
             close();
             return;
         }
@@ -708,7 +722,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                     else sv._toast('这句现在没在页面上', '回到这一楼再试，或者直接生成新的一版对比');
                 } else {
                     const tk = row._takes[Number(key)];
-                    if (tk) await sv.playTake(tk.urls, tk.rate);
+                    if (tk) await sv.playTake(tk.urls, tk.rate, { amb: ambAt(row) });
                 }
             } catch (err) { sv._toast('播放失败', String(err?.message || err).slice(0, 120), 'error'); }
             finally { tp.classList.remove('is-playing'); }
@@ -786,7 +800,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 play.classList.remove('is-busy');
                 const tp2 = row.querySelector(`[data-take-play="${row._chosen}"]`);
                 tp2?.classList.add('is-playing');
-                await sv.playTake(res.urls, res.rate).catch(() => null);
+                await sv.playTake(res.urls, res.rate, { amb: ambAt(row) }).catch(() => null);
                 tp2?.classList.remove('is-playing');
             } catch (err) {
                 if (!ctl.signal.aborted && err?.name !== 'AbortError') sv._toast('生成失败', String(err?.message || err).slice(0, 140), 'error');

@@ -62,7 +62,7 @@ export const DEEP_PROMPT = [
     '9. 高张力（4 以上）的长台词：标签一下就衰减，长句中段会塌成平读，用叠字和省略号打碎成短碎片，每 4~7 个字补一个匹配的标签。中低张力的句子绝不堆标签。',
     '10. 光杆单字疑问（嗯？、啊？、え？、ん？）的 ？ 必须保留，不要被别的情绪盖掉。',
     '11. reason：写了 content 或 tension_level 到 3 以上的句子，写一句依据（12 字以内，说清这句背后的心理）。',
-    '11.5 环境声：ambience 写这一楼【开头】的环境声，播放时会在台词底下轻轻垫一层。只从已支持的环境声中选：none（无）、rain（雨声）、drizzle（细雨）、roofrain（屋檐雨声）、snow（雪夜寒风）、blizzard（暴风雪）、forest（森林鸟鸣）、birds（清晨鸟鸣）、river（溪流）、waterfall（瀑布）、lake（湖畔微风）、harbor（港口）、train（火车车厢）、subway（地铁车厢）、traffic（城市车流）、street（城市街道）、classroom（教室）、library（图书馆）、hospital（医院走廊）、office（办公室）、restaurant（餐厅）、market（热闹集市）、festival（节日人群）、applause（剧场掌声）、clock（钟表滴答）、fan（风扇）、aircon（空调）、computer（电脑机房）、space（科幻舱室）、cave（洞穴回声）、footsteps（走廊脚步）、keyboard（键盘敲击）、seaside（海边海鸥）、thunder（远处雷声）。场景中途发生变化时，在变化后的第一句台词里写 ambience；没变的句子不写。只依据正文旁白写到的场景，不要凭空加。另外，台词里有正文写到的一下子的声音，可以在那句的 content 里加音效标签（每楼至多两三处）：[crowd laughing]（周围人哄笑）、[background laughter]（背景里的笑声）、[audience laughing]（观众笑）、[applause]（掌声）、[crowd noise]（周围一阵嘈杂）。',
+    '11.5 环境声：ambience 写这一楼【开头】的环境声，播放时会在台词底下轻轻垫一层。只从已支持的环境声中选：' + Object.entries(AMBIENCE_LABELS).map(([k, l]) => `${k}（${l}）`).join('、') + '。场景中途发生变化时，在变化后的第一句台词里写 ambience；没变的句子不写。只依据正文旁白写到的场景，不要凭空加。另外，台词里有正文写到的一下子的声音，可以在那句的 content 里加音效标签（每楼至多两三处）：[crowd laughing]（周围人哄笑）、[background laughter]（背景里的笑声）、[audience laughing]（观众笑）、[applause]（掌声）、[crowd noise]（周围一阵嘈杂）。',
     '12. 只输出 JSON，不要在 JSON 外面写任何东西，也不要输出思考过程。键名必须和上面的例子一模一样（顶层是 tone、arc、ambience、voices；每句是 id、role、pace、tension_level、reason、content、ambience），不许改名、不许换成 annotations / lines / label 之类，不许外面再包一层。'
 ].join('\n');
 
