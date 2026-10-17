@@ -340,7 +340,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         // 选了试听里的某一版：以后就播这版；否则丢掉这句的旧语音，下次播放重新生成
         const take = Number.isInteger(row._chosen) ? row._takes?.[row._chosen] : null;
         const sig = sv.takeSig(r.speaker, script, r.t, r.pace);
-        if (take && take.sig === sig) { sv.pinTake(mesid, r.line, sig, take.urls); take.kept = true; }
+        if (take && take.sig === sig) { sv.pinTake(mesid, r.line, r.text, sig, take.urls, take.rate); take.kept = true; }
         else sv.markFresh(mesid, r.line);
         row._dirty = false;
         const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(r.line)}"]`);

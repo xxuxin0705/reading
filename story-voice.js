@@ -1,7 +1,7 @@
 // 🔊 正文朗读（独立插件版）：给酒馆正文里的台词挂上 ▶ / ↻ / 🎭，按情绪读出来。
 // 只改页面显示，不改聊天记录。音色在插件自己的「角色音色库」里配（所有聊天共用）。
 
-import { favStore, needsTranslation } from './fav-store.js';
+import { favStore, needsTranslation, pinStore } from './fav-store.js';
 import { startAmbience, AMBIENCE_LABELS } from './ambience.js';
 import { adaptScript, channelProfile } from './tts-adapt.js';
 import { openDeepEditor } from './deep-editor.js';
@@ -893,16 +893,37 @@ export class StoryVoice {
                 }, 250);
             });
         }
-        // 往上加载更早的消息时，新出现的楼层也挂上按钮
-        const chatEl = document.getElementById('chat');
-        if (chatEl && window.MutationObserver) {
+        // 盯着聊天区：新楼层出现、某一楼被重画（切换回复、编辑、美化脚本、重新进聊天）按钮没了，就马上重新挂
+        const watch = new Map();
+        const check = (mes) => {
+            const id = mes.getAttribute('mesid');
+            if (id == null) return;
+            clearTimeout(watch.get(id));
+            watch.set(id, setTimeout(() => {
+                watch.delete(id);
+                const el = document.querySelector(`#chat .mes[mesid="${CSS.escape(String(id))}"]`);
+                if (el && this._needsRedraw(el)) this.processElement(el);
+            }, 180));
+        };
+        const attach = () => {
+            const chatEl = document.getElementById('chat');
+            if (!chatEl || !window.MutationObserver) return false;
             const obs = new MutationObserver((list) => {
-                list.forEach(m => m.addedNodes.forEach(n => {
-                    if (n.nodeType === 1 && n.classList?.contains('mes')) later(n.getAttribute('mesid'), 200);
-                }));
+                const seen = new Set();
+                list.forEach(m => {
+                    const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+                    const hits = t?.classList?.contains('mes') ? [t] : (t?.closest?.('.mes[mesid]') ? [t.closest('.mes[mesid]')] : []);
+                    m.addedNodes.forEach(n => { if (n.nodeType === 1 && n.classList?.contains('mes')) hits.push(n); });
+                    hits.forEach(h => { if (!seen.has(h)) { seen.add(h); check(h); } });
+                });
             });
-            obs.observe(chatEl, { childList: true });
-        }
+            obs.observe(chatEl, { childList: true, subtree: true });
+            return true;
+        };
+        if (!attach()) { let n = 0; const t = setInterval(() => { if (attach() || ++n > 40) clearInterval(t); }, 500); }
+        // 兜底：切换回复后酒馆可能晚一点才把新内容画出来
+        if (es?.on && ev.MESSAGE_SWIPED) es.on(ev.MESSAGE_SWIPED, (id) => { [400, 900, 1600].forEach(d => setTimeout(() => { const el = document.querySelector(`#chat .mes[mesid="${id}"]`); if (el && this._needsRedraw(el)) this.processElement(el); }, d)); });
+        this._loadPins().then(() => this.refreshAll());
         setTimeout(() => { this.updatePrompt(); this.refreshAll(); }, 600);
     }
 
@@ -1056,7 +1077,32 @@ export class StoryVoice {
         return { marks, lines, envs, tones };
     }
 
-    processElement(mesEl, { live = false } = {}) {
+    // 这一楼现在应该是什么样：消息原文、第几个回复、开没开朗读、分析模式
+    _boxSig(mesEl) {
+        const msg = window.SillyTavern?.getContext?.()?.chat?.[Number(mesEl?.getAttribute?.('mesid'))];
+        const s = this.getSettings();
+        return `${s.enabled ? 1 : 0}|${s.analysisMode}|${s.lineEdit ? 1 : 0}|${msg?.swipe_id ?? ''}|${this._hash(String(msg?.mes || ''))}`;
+    }
+
+    processElement(mesEl, opts = {}) {
+        this._processElement(mesEl, opts);
+        const box = mesEl?.querySelector?.('.mes_text');
+        if (!box || opts.live) return;
+        box.dataset.yzsvSig = this._boxSig(mesEl);
+        box.dataset.yzsvHas = box.querySelector('.yzsv-bar') ? '1' : '0';
+    }
+
+    // 酒馆重画了这一楼（切换回复、编辑、美化脚本、重新进聊天……）按钮被冲掉了：要重新挂
+    _needsRedraw(mesEl) {
+        const box = mesEl?.querySelector?.('.mes_text');
+        if (!box || box.querySelector('textarea')) return false;
+        const chat = window.SillyTavern?.getContext?.()?.chat || [];
+        if (this._streaming && Number(mesEl.getAttribute('mesid')) === chat.length - 1) return false; // 生成中的那楼由边写边挂处理
+        if (box.dataset.yzsvSig !== this._boxSig(mesEl)) return true;
+        return box.dataset.yzsvHas === '1' && (!box.querySelector('.yzsv-bar') || !box.querySelector('.yzsv-all'));
+    }
+
+    _processElement(mesEl, { live = false } = {}) {
         const box = mesEl?.querySelector?.('.mes_text');
         if (!box) return;
         this._clear(box);
@@ -2093,21 +2139,43 @@ export class StoryVoice {
         finally { if (this.playing === run) this.stop(); }
     }
 
-    // 保存时选中的那版：之后点 ▶ 直接播它（演法又改了就不用它）
-    pinTake(mesid, line, sig, urls) {
+    // 保存时选中的那版：之后点 ▶ 直接播它（演法又改了就不用它）。
+    // 按「这条消息 + 这句台词」记，存在浏览器本地：刷新、换聊天、切换回复再回来都还是这版
+    _pinKey(mesid, text) {
+        const msg = window.SillyTavern?.getContext?.()?.chat?.[Number(mesid)];
+        const h = msg ? this._deepHashOf(msg) : '';
+        return h ? `${h}\u0001${text}` : '';
+    }
+
+    pinTake(mesid, line, text, sig, urls, rate = 1) {
         this._pinned = this._pinned || new Map();
-        const k = `${mesid}:${line}`;
+        const k = this._pinKey(mesid, text);
+        if (!k) return;
         const old = this._pinned.get(k);
-        if (old && old.urls !== urls) old.urls.forEach(u => { if (!urls.includes(u)) this._safeRevoke(u); });
+        if (old?.urls && old.urls !== urls) old.urls.forEach(u => { if (!urls.includes(u)) this._safeRevoke(u); });
         this._pinned.set(k, { sig, urls });
-        this._forceFresh?.delete(k);
+        this._forceFresh?.delete(`${mesid}:${line}`);
+        Promise.all(urls.map(u => fetch(u).then(r => r.blob())))
+            .then(blobs => pinStore.put(k, sig, blobs, rate))
+            .catch(e => console.warn('[正文朗读] 选定的语音没能存到本地:', e));
+    }
+
+    async _loadPins() {
+        try {
+            const all = await pinStore.all();
+            this._pinned = this._pinned || new Map();
+            all.forEach(x => { if (!this._pinned.has(x.key)) this._pinned.set(x.key, { sig: x.sig, blobs: x.blobs }); });
+        } catch (e) { /* 没有本地存储就只在这次打开里有效 */ }
     }
 
     _pinnedFor(bar) {
-        const p = this._pinned?.get(`${bar.dataset.mesid}:${bar.dataset.line}`);
+        const k = this._pinKey(bar.dataset.mesid, bar.dataset.text || '');
+        const p = k ? this._pinned?.get(k) : null;
         if (!p) return null;
         const d = this._barDeep(bar) || {};
-        return p.sig === this.takeSig(bar.dataset.speaker || '', d.s || '', d.t || 0, d.p || 'normal') ? p.urls : null;
+        if (p.sig !== this.takeSig(bar.dataset.speaker || '', d.s || '', d.t || 0, d.p || 'normal')) return null;
+        if (!p.urls && p.blobs) p.urls = p.blobs.map(b => URL.createObjectURL(b));
+        return p.urls || null;
     }
 
     // 这句在 🎭 里手动改过（或者正在编辑面板里试听）：只按手动的读，不去分析整楼

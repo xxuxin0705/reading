@@ -70,3 +70,40 @@ export function needsTranslation(text = '') {
     const latin = (t.match(/[A-Za-zÀ-ɏЀ-ӿ]/g) || []).length;
     return han === 0 && latin >= 3;
 }
+
+// ---------- 🎭 里选定的那版语音：存在本地，刷新、换聊天、切换回复后再回来还是那版 ----------
+const PIN_DB = 'yzr-pins';
+const PIN_STORE = 'pins';
+const PIN_MAX = 400;
+let PDB = null;
+function openPins() {
+    if (PDB) return Promise.resolve(PDB);
+    return new Promise((resolve, reject) => {
+        if (!window.indexedDB) { reject(new Error('no indexedDB')); return; }
+        const req = indexedDB.open(PIN_DB, 1);
+        req.onupgradeneeded = () => { const db = req.result; if (!db.objectStoreNames.contains(PIN_STORE)) db.createObjectStore(PIN_STORE, { keyPath: 'key' }).createIndex('at', 'at'); };
+        req.onsuccess = () => { PDB = req.result; resolve(PDB); };
+        req.onerror = () => reject(req.error);
+    });
+}
+function ptx(mode, fn) {
+    return openPins().then(db => new Promise((resolve, reject) => {
+        const t = db.transaction(PIN_STORE, mode);
+        let out;
+        Promise.resolve(fn(t.objectStore(PIN_STORE))).then(v => { out = v; });
+        t.oncomplete = () => resolve(out);
+        t.onerror = () => reject(t.error);
+        t.onabort = () => reject(t.error);
+    }));
+}
+export const pinStore = {
+    async put(key, sig, blobs, rate = 1) {
+        await ptx('readwrite', os => req2p(os.put({ key, sig, blobs, rate, at: Date.now() })));
+        const all = await this.all();
+        if (all.length > PIN_MAX) {
+            const old = all.sort((a, b) => a.at - b.at).slice(0, all.length - PIN_MAX);
+            await ptx('readwrite', os => Promise.all(old.map(x => req2p(os.delete(x.key)))));
+        }
+    },
+    async all() { return (await ptx('readonly', os => req2p(os.getAll()))) || []; }
+};
