@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.2.4'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.2.6'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -363,11 +363,16 @@ export class StoryVoice {
             const timeout = (Number(s.deepTimeout) || 150) * 1000;
             let raw = await this._callModel(messages, { timeout, maxTokens: 16000 });
             let parsed = parseDeep(raw, items);
+            if (parsed && !parsed.useful && !parsed.tone) parsed = null; // 读出来是空的（没有情绪、没有标注）：当成没读懂，再要一次
             if (!parsed) {
                 console.warn('[正文朗读] 深度分析第一次的回答没法读，再试一次：', String(raw).slice(0, 2000));
                 const again = [...messages, { role: 'assistant', content: String(raw || '').slice(0, 400) }, { role: 'user', content: '上面的回答不是要求的格式。只输出一个 JSON 对象（以 { 开头、以 } 结尾），不要思考过程、不要解释、不要代码块。' }];
                 raw = await this._callModel(again, { timeout, maxTokens: 16000 });
                 parsed = parseDeep(raw, items);
+                if (parsed && !parsed.useful && !parsed.tone) {
+                    console.warn('[正文朗读] 深度分析的回答里没有可用的内容：', raw);
+                    throw new Error(`模型的回答里没有可用的分析（没有情绪、张力、标注），开头是：${String(raw).replace(/\s+/g, ' ').slice(0, 60)}…`);
+                }
             }
             this._deepLastRaw = String(raw || '');
             if (!parsed) {
@@ -377,7 +382,7 @@ export class StoryVoice {
                     : `模型返回的不是要求的格式，开头是：${r.slice(0, 60).replace(/\s+/g, ' ')}…`);
             }
             if (parsed.partial) this._toast('深度分析不完整', '模型的回答被截断了，已经用上写完整的那些句子，其余按原文读；可以点「重新分析」再试', 'warning');
-            const out = { at: Date.now(), tone: parsed.tone, arc: parsed.arc, ambience: parsed.ambience || 'none', lines: {} };
+            const out = { at: Date.now(), tone: parsed.tone, arc: parsed.arc, ambience: parsed.ambience || 'none', lines: {}, raw: String(raw || '').slice(0, 20000) };
             // 分析之前就手动改过的句子（没点「重新分析」覆盖）保留用户的
             const before = this._lineEntry(msg);
             const keepEdited = before && before.manualOnly ? before.lines || {} : {};
@@ -592,7 +597,13 @@ export class StoryVoice {
     }
 
     _deepFor(entry, text) {
-        const v = entry?.lines?.[text];
+        let v = entry?.lines?.[text];
+        if (!v && entry?.lines) {
+            const norm = (x) => String(x || '').replace(/\s+/g, '').replace(/\.{3,}|…+|‥+/g, '…').replace(/[“”"「」『』]/g, '').replace(/[！!]/g, '!').replace(/[？?]/g, '?');
+            const k = norm(text);
+            const hit = Object.keys(entry.lines).find(x => norm(x) === k);
+            if (hit) v = entry.lines[hit];
+        }
         if (!v) return null;
         return { s: v.s || '', p: v.pace || 'normal', t: Number(v.t) || 0, tone: entry.tone || '', role: v.role || '', why: v.why || '', amb: v.amb || '' };
     }
@@ -1252,7 +1263,8 @@ export class StoryVoice {
                     if (names.length) ambText = ` · 🌧 ${names.join('→')}`;
                 }
                 const toneShown = this._floorTone(msg) || deepEntry?.tone || '';
-                const label = pending ? '🎭 正在分析情绪…' : deepEntry ? `🎭 ${esc(toneShown || '已分析')}${toneShown === '亲密' ? ' · NSFW' : ''}${esc(ambText)}${deepEntry.arc ? ` · ${esc(deepEntry.arc)}` : ''}` : err ? '🎭 分析失败' : '🎭 未分析';
+                const emptyDeep = deepEntry && !deepEntry.tone && !Object.values(deepEntry.lines || {}).some(v => v?.s || v?.t || v?.why || v?.edited);
+                const label = pending ? '🎭 正在分析情绪…' : emptyDeep ? '🎭 分析结果是空的（模型没给出情绪），点「重新分析」' : deepEntry ? `🎭 ${esc(toneShown || '已分析')}${toneShown === '亲密' ? ' · NSFW' : ''}${esc(ambText)}${deepEntry.arc ? ` · ${esc(deepEntry.arc)}` : ''}` : err ? '🎭 分析失败' : '🎭 未分析';
                 deepHtml = deepEntry && !pending
                     ? `<button type="button" class="yzsv-deep yzsv-deep-open" title="点开查看、修改每句的分析">${label} ›</button><button type="button" class="yzsv-btn yzsv-deep-open">查看 / 编辑</button><button type="button" class="yzsv-btn yzsv-reanalyze">重新分析</button>`
                     // 还没分析 / 分析中 / 失败：逐句调整的入口照样在

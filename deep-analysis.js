@@ -169,8 +169,39 @@ export function acousticScript(content, original) {
 }
 
 function normPace(v) {
-    const k = String(v || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-    return PACES.includes(k) ? k : 'normal';
+    const raw = String(v || '').trim();
+    const k = raw.toLowerCase().replace(/[\s-]+/g, '_');
+    if (PACES.includes(k)) return k;
+    if (/很慢|极慢|非常慢|very_?slow/i.test(raw)) return 'very_slow';
+    if (/很快|极快|非常快|very_?fast/i.test(raw)) return 'very_fast';
+    if (/慢|slow/i.test(raw)) return 'slow';
+    if (/快|急|fast|quick/i.test(raw)) return 'fast';
+    return 'normal';
+}
+
+// 张力：数字、「3/5」、或者文字（low / 强烈 …）
+function normTension(v) {
+    if (v === undefined || v === null || v === '') return 0;
+    const n = Math.round(parseFloat(String(v)));
+    if (Number.isFinite(n) && n >= 1 && n <= 5) return n;
+    const w = String(v).toLowerCase();
+    if (/extreme|peak|max|爆发|极|顶点/.test(w)) return 5;
+    if (/high|strong|intense|强烈|高/.test(w)) return 4;
+    if (/medium|moderate|明显|中/.test(w)) return 3;
+    if (/low|mild|slight|轻微|低/.test(w)) return 2;
+    if (/calm|neutral|none|平静|无/.test(w)) return 1;
+    return 0;
+}
+
+// 情节：模型写成英文或者带了别的字
+const TONE_EN = [[/intimate|nsfw|sexual/i, '亲密'], [/romantic|romance|flirt/i, '浪漫'], [/warm|cozy|sweet|tender|heartwarming/i, '温馨'], [/light|relaxed|comedy|funny|playful/i, '轻松'], [/sad|grief|tragic|melanchol/i, '悲伤'], [/horror|terror|scary/i, '恐怖'], [/battle|fight|combat|action/i, '战斗'], [/suspense|mystery|myster/i, '悬疑'], [/tense|tension|anxious|urgent/i, '紧张'], [/epic|grand/i, '壮阔'], [/daily|casual|everyday|normal|slice/i, '日常']];
+function normTone(v) {
+    const t = String(v ?? '').trim();
+    if (!t) return '';
+    if (TONES.includes(t)) return t;
+    const hit = TONES.find(x => t.includes(x));
+    if (hit) return hit;
+    return (TONE_EN.find(([re]) => re.test(t)) || [])[1] || '';
 }
 
 // 解析模型的回答 → { tone, arc, items: Map(id → {role, pace, tension, script, reason}) }
@@ -212,14 +243,14 @@ export function parseDeep(raw, lines) {
     const byId = new Map(lines.map(l => [Number(l.id), l]));
     const items = new Map();
     list.forEach(v => {
-        const id = Number(v?.id);
+        const id = Number(String(v?.id ?? '').replace(/[^\d]/g, '')) || Number(v?.id);
         const line = byId.get(id);
         if (!line || items.has(id)) return;
-        const t = Math.round(Number(v?.tension_level ?? v?.tension));
+        const t = normTension(v?.tension_level ?? v?.tension);
         let content = typeof v?.content === 'string' ? v.content : '';
-        if (!content && v.tags?.length) {
+        if (v.tags?.length && !/\[[^\]\n]{1,40}\]/.test(content)) {
             const known = v.tags.map(x => (KNOWN_TAGS.has(x) ? x : TAG_ALIAS[x])).filter(Boolean).slice(0, 2);
-            if (known.length) content = `${known.map(x => `[${x}]`).join('')} ${line.text}`;
+            if (known.length) content = `${known.map(x => `[${x}]`).join('')} ${content || line.text}`;
         }
         let script = content ? acousticScript(content, line.text) : '';
         // 对不上原文：只保留句首的标签，后面照原文念
@@ -238,10 +269,10 @@ export function parseDeep(raw, lines) {
         });
     });
     if (!items.size) return null;
-    const toneRaw = String(topField(obj, ['tone', 'mood', 'scene_tone', 'atmosphere']) ?? '').trim();
-    const tone = TONES.includes(toneRaw) ? toneRaw : '';
+    const tone = normTone(topField(obj, ['tone', 'mood', 'scene_tone', 'atmosphere', 'scene', 'genre']));
     const amb = String(topField(obj, ['ambience', 'ambient', 'environment']) ?? '').trim().toLowerCase();
-    return { tone, arc: String(topField(obj, ['arc', 'summary', 'emotional_arc']) ?? '').trim().slice(0, 60), ambience: AMBIENCES.includes(amb) ? amb : 'none', items, partial: !!obj._partial };
+    const useful = [...items.values()].filter(x => x.script || x.tension || x.reason).length;
+    return { tone, arc: String(topField(obj, ['arc', 'summary', 'emotional_arc']) ?? '').trim().slice(0, 60), ambience: AMBIENCES.includes(amb) ? amb : 'none', items, partial: !!obj._partial, useful };
 }
 
 // 基调收紧标签：紧张、恐怖、战斗这类楼层不用气声和低哼；日常、悲伤不用低哼

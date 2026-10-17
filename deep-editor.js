@@ -210,6 +210,17 @@ function injectStyle() {
 .yzsv-ed-foot button { flex: 1; border: 0; border-radius: 11px; padding: 10px; font-size: 14px; cursor: pointer; font-family: inherit; }
 .yzsv-ed-foot .primary { background: #a18cd1; color: #fff; }
 .yzsv-ed-foot .ghost { background: #f1f1f5; color: #555; }
+.yzsv-ed-fold, .yzsv-ed-tiptog, .yzsv-ed-foldall { flex: 0 0 auto; border: 0; border-radius: 8px; padding: 4px 9px; font-size: 12px; cursor: pointer; font-family: inherit; background: #f1eefa; color: #6b54a8; }
+.yzsv-ed-raw { margin-top: 8px; font-size: 12px; color: #6b54a8; }
+.yzsv-ed-raw summary { cursor: pointer; }
+.yzsv-ed-raw pre { margin: 6px 0 0; max-height: 34vh; overflow: auto; overscroll-behavior: contain; white-space: pre-wrap; word-break: break-all; background: #f4f6fb; border-radius: 9px; padding: 8px; color: #445; font-size: 11.5px; }
+.yzsv-ed-tiprow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.yzsv-ed-tiprow .grow { flex: 1; }
+.yzsv-ed-tip[hidden] { display: none; }
+.yzsv-ed-line.is-folded .yzsv-ed-fold-body { display: none; }
+.yzsv-ed-sum { display: none; margin-top: 6px; font-size: 12.5px; color: #666; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.yzsv-ed-line.is-folded .yzsv-ed-sum { display: block; }
+.yzsv-ed-line.is-folded { padding-bottom: 9px; }
 .yzsv-ed-ch { margin: 6px 0 2px; padding: 6px 9px; border-radius: 9px; background: #f3f0fb; font-size: 11.5px; line-height: 1.5; color: #6b54a8; }
 .yzsv-ed-ch b { font-weight: 600; }
 .yzsv-ed-ch span { display: block; color: #8a7fa8; }
@@ -290,7 +301,9 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         const pace = v.pace || 'normal';
         return `
         <div class="yzsv-ed-line${v.edited ? ' is-edited' : ''}" data-line="${esc(bar.dataset.line)}" data-text="${esc(text)}">
-            <div class="yzsv-ed-top"><span class="yzsv-ed-no">#${i + 1}</span><input class="yzsv-ed-spk" value="${esc(bar.dataset.speaker || v.role || '')}" title="说话人（改了会按这个人的音色读）"></div>
+            <div class="yzsv-ed-top"><span class="yzsv-ed-no">#${i + 1}</span><input class="yzsv-ed-spk" value="${esc(bar.dataset.speaker || v.role || '')}" title="说话人（改了会按这个人的音色读）"><button type="button" class="yzsv-ed-fold" title="收起这一句">收起 ▴</button></div>
+            <div class="yzsv-ed-sum" title="点一下展开"></div>
+            <div class="yzsv-ed-fold-body">
             ${v.why ? `<div class="yzsv-ed-why">💭 ${esc(v.why)}</div>` : ''}
             <div class="yzsv-ed-ch${prof.kind === 'plain' ? ' is-plain' : ''}">${chHtml(prof)}</div>
             <div class="yzsv-ed-orig">原文：${esc(text)}</div>
@@ -303,6 +316,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             <div class="yzsv-ed-acts"><button type="button" class="yzsv-ed-play">▶ 生成一版试听</button><button type="button" class="yzsv-ed-reset">去掉标签</button></div>
             <div class="yzsv-ed-takes" hidden></div>
             <div class="yzsv-ed-sent" hidden></div>
+            </div>
         </div>`;
     };
 
@@ -315,6 +329,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 <b>${single ? '🎭 这句的演法' : analyzed ? '🎭 深度分析结果' : '🎭 逐句调整演法'}</b> <small class="yzsv-ed-nsfw" ${curTone === '亲密' ? '' : 'hidden'}>NSFW</small>
                 <div class="yzsv-ed-amb">🎬 这一楼的情节<select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === curTone ? 'selected' : ''}>${x ? (x === '亲密' ? '亲密（NSFW）' : x) : '没判断'}</option>`).join('')}</select>${analyzed && !single ? `<input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向" style="flex:1;min-width:0;border:1px solid #e3e3ea;border-radius:9px;padding:5px 8px;font-size:13px;background:#f8f8fb;">` : ''}</div>
                 <div class="yzsv-ed-amb">🌧 这一楼开头的环境声<select class="yzsv-ed-ambsel">${Object.entries(AMBIENCE_LABELS).map(([k, l]) => `<option value="${k}" ${k === (entry.ambience || 'none') ? 'selected' : ''}>${l}</option>`).join('')}</select><button type="button" class="yzsv-ed-ambtry" style="border:0;background:#f1f1f5;border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;">试听</button></div>
+                <div class="yzsv-ed-tiprow"><button type="button" class="yzsv-ed-tiptog">说明 收起 ▴</button><span class="grow"></span>${bars.length > 1 ? '<button type="button" class="yzsv-ed-foldall" data-fold="1">全部收起 ▴</button>' : ''}</div>
+                ${analyzed && entry.raw ? `<details class="yzsv-ed-raw"><summary>🧾 看模型的原始回复</summary><pre class="yzsv-scrollbox">${esc(entry.raw)}</pre></details>` : ''}
                 <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高情绪越强；语速在播放时直接变快变慢（不用重新生成）。每句上面写了这个人用的渠道和它认什么：不同渠道下面能选的选项不一样，虚线框里是实际会发过去的内容。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。点「生成一版试听」只调用语音接口生成这一句（不会调用分析模型），可以反复生成、来回对比，保存时只留选中的那版。</div>
             </div>
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
@@ -379,7 +395,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
     // 动过哪句就记哪句（输入、点选项、改说话人）
     mask.querySelectorAll('.yzsv-ed-line').forEach(row => {
         row.addEventListener('input', () => { row._dirty = true; });
-        row.addEventListener('click', (e) => { if (e.target.closest('button') && !e.target.closest('.yzsv-ed-tabs, .yzsv-ed-play, .yzsv-ed-takes')) row._dirty = true; });
+        row.addEventListener('click', (e) => { if (e.target.closest('button') && !e.target.closest('.yzsv-ed-tabs, .yzsv-ed-play, .yzsv-ed-takes, .yzsv-ed-fold')) row._dirty = true; });
     });
     // 每句：记住说话人的渠道，实时预览发过去的内容；改了说话人就换成那个人渠道的选项
     const prevHtml = (row) => {
@@ -529,6 +545,17 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         const b = mask.querySelector('.yzsv-ed-nsfw');
         if (b) b.hidden = ev.target.value !== '亲密';
     });
+    // 一句收起时只留一行：说话人 + 演法 + 张力 / 语速
+    const setFold = (row, fold) => {
+        row.classList.toggle('is-folded', fold);
+        const btn = row.querySelector('.yzsv-ed-fold');
+        if (btn) { btn.textContent = fold ? '展开 ▾' : '收起 ▴'; btn.title = fold ? '展开这一句' : '收起这一句'; }
+        if (fold) {
+            const r = read(row);
+            const PL = Object.fromEntries(PACES);
+            row.querySelector('.yzsv-ed-sum').textContent = `${r.script || r.text}  · 张力 ${r.t} · ${PL[r.pace] || r.pace}${row._takes?.some(Boolean) ? ` · 试听 ${row._takes.filter(Boolean).length} 版` : ''}`;
+        }
+    };
     let trial = null;
     const close = () => { trial?.stop(); sv.stop(); dropTakes(); mask.remove(); };
     mask.addEventListener('click', async (e) => {
@@ -557,6 +584,23 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             setTimeout(() => { if (trial) { trial.stop(); trial = null; b.textContent = '试听'; } }, 6000);
             return;
         }
+        // 收起 / 展开：说明、单句、整楼全部
+        if (e.target.closest('.yzsv-ed-tiptog')) {
+            const tip = mask.querySelector('.yzsv-ed-tip');
+            tip.hidden = !tip.hidden;
+            e.target.closest('.yzsv-ed-tiptog').textContent = tip.hidden ? '说明 展开 ▾' : '说明 收起 ▴';
+            return;
+        }
+        const foldAll = e.target.closest('.yzsv-ed-foldall');
+        if (foldAll) {
+            const fold = foldAll.dataset.fold === '1';
+            mask.querySelectorAll('.yzsv-ed-line').forEach(r => setFold(r, fold));
+            foldAll.dataset.fold = fold ? '0' : '1';
+            foldAll.textContent = fold ? '全部展开 ▾' : '全部收起 ▴';
+            return;
+        }
+        const foldRow = e.target.closest('.yzsv-ed-fold, .yzsv-ed-sum')?.closest('.yzsv-ed-line');
+        if (foldRow) { setFold(foldRow, !foldRow.classList.contains('is-folded')); return; }
         const row = e.target.closest('.yzsv-ed-line');
         if (!row) return;
         const segBtn = e.target.closest('.yzsv-ed-seg button');
