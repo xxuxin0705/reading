@@ -78,11 +78,44 @@ export function buildDeepMessages({ story = '', lines = [], roster = [], userNam
         story,
         lines: lines.map(l => ({ id: l.id, text: l.text }))
     };
+    // 规则直接放进用户消息：有的连接（跟随酒馆的 Gemini 等）会丢掉或合并 system，模型就只看到数据、自己乱编格式
+    const rules = `${DEEP_PROMPT}\n13. ${RULE_INTIMATE_AUTO}${engines ? `\n${ENGINE_RULE}` : ''}`;
     return [
-        { role: 'system', content: `${DEEP_PROMPT}\n13. ${RULE_INTIMATE_AUTO}${engines ? `\n${ENGINE_RULE}` : ''}` },
-        { role: 'user', content: JSON.stringify(input) }
+        { role: 'system', content: '你是有声小说的配音导演兼声学工程师。严格按用户消息里的规则，只输出规定格式的 JSON。' },
+        { role: 'user', content: `${rules}\n\n===== 输入（JSON）=====\n${JSON.stringify(input)}\n\n===== 输出 =====\n只输出一个 JSON 对象，格式：{"tone":"…","arc":"…","ambience":"…","voices":[{"id":1,"role":"…","pace":"…","tension_level":2,"reason":"…","content":"…"}]}。每个 id 都要有 tension_level（1~5 的整数）。` }
     ];
 }
+
+// 让酒馆按 JSON 结构输出（支持的接口会强制格式，比如 Gemini、OpenAI；不支持的会忽略）
+export const DEEP_SCHEMA = Object.freeze({
+    name: 'storyvoice_deep_analysis',
+    strict: false,
+    value: {
+        type: 'object',
+        properties: {
+            tone: { type: 'string', enum: TONES },
+            arc: { type: 'string' },
+            ambience: { type: 'string' },
+            voices: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'integer' },
+                        role: { type: 'string' },
+                        pace: { type: 'string', enum: PACES },
+                        tension_level: { type: 'integer' },
+                        reason: { type: 'string' },
+                        content: { type: 'string' },
+                        ambience: { type: 'string' }
+                    },
+                    required: ['id', 'tension_level']
+                }
+            }
+        },
+        required: ['tone', 'voices']
+    }
+});
 
 // 把正文里每句台词前面插上 ⟦编号⟧
 export function numberStory(full, lines) {
@@ -222,6 +255,28 @@ function topField(obj, keys, depth = 0) {
     for (const x of Object.values(obj)) if (x && typeof x === 'object' && !Array.isArray(x)) { const y = topField(x, keys, depth + 1); if (y !== undefined) return y; }
     return undefined;
 }
+// 模型没按要求写标签、只写了一段英文 / 中文的演法描述（acoustic、delivery…）：从描述里认出情绪、声音、张力、语速
+const DESC_EMO = [[/furious|rage|enraged|暴怒/i, 'furious'], [/angry|anger|irritat|annoyed|生气|恼/i, 'angry'], [/sob|crying|cries|tearful|weep|哭/i, 'sobbing'], [/heartbr|心疼/i, 'heartbroken'], [/sad|sorrow|grief|melanchol|悲|难过/i, 'sad'], [/panic|慌/i, 'panicked'], [/scared|fear|afraid|terrified|害怕/i, 'scared'], [/anxi|worr|concern|uneasy|焦急|担心/i, 'anxious'], [/nervous|紧张/i, 'nervous'], [/surpris|shock|惊讶/i, 'surprised'], [/smug|cocky|得意洋洋/i, 'smug'], [/boast|arrogan|swagger|triumph|proud|得意|骄傲/i, 'proud'], [/excit|energetic|thrill|兴奋/i, 'excited'], [/teas|playful|mischiev|调侃|戏谑/i, 'teasing'], [/coquett|whin|pout|撒娇/i, 'whiny'], [/embarrass|shy|bashful|害羞/i, 'embarrassed'], [/displeas|complain|grumbl|不满/i, 'frustrated'], [/sarcas|mock|讽/i, 'sarcastic'], [/disdain|contempt|scorn|不屑/i, 'disdainful'], [/cold|icy|detached|冷/i, 'cold'], [/exhaust|weak|tired|weary|fatigue|疲惫|虚弱/i, 'exhausted'], [/resign|无奈/i, 'resigned'], [/relie|释然/i, 'relieved'], [/tender|affection|fond|宠溺/i, 'tender'], [/gentle|comfort|reassur|soothing|soft|温柔|安抚/i, 'gentle'], [/happy|cheer|joy|开心/i, 'happy'], [/serious|stern|严肃/i, 'serious'], [/confused|puzzl|困惑/i, 'confused'], [/curious|好奇/i, 'curious']];
+const DESC_VOICE = [[/scream|尖叫/i, 'screaming'], [/shout|yell|喊/i, 'shouting'], [/whisper|耳语|低语/i, 'whisper'], [/breathy|airy|气声/i, 'breathy'], [/voice (?:trembl|shak|quiver)|trembl|颤/i, 'voice trembling'], [/voice break|cracking|破音/i, 'voice breaking'], [/choked|哽咽/i, 'choked up'], [/holding back tears|强忍/i, 'holding back tears'], [/sniff|吸鼻/i, 'sniffling'], [/drawn[- ]out sigh|sigh|叹/i, 'sigh'], [/gasp|倒吸/i, 'gasp'], [/pant|喘/i, 'panting'], [/laugh(?:ing)? loudly|guffaw|大笑/i, 'laughing loudly'], [/chuckl|轻笑/i, 'chuckling'], [/laugh|笑/i, 'laughing'], [/gritted teeth|咬牙/i, 'through gritted teeth'], [/drawn[- ]out|drawl|拖长/i, 'drawn out'], [/urgent|hurried|rapid|in a hurry|急促/i, 'in a hurry tone'], [/loud|raises in (?:pitch and )?volume|大声/i, 'loud'], [/quiet|hushed|softly|小声/i, 'soft tone'], [/yawn|哈欠/i, 'yawning']];
+export function descToHints(desc = '') {
+    const d = String(desc || '');
+    if (!d.trim()) return null;
+    const emo = (DESC_EMO.find(([re]) => re.test(d)) || [])[1];
+    const voice = (DESC_VOICE.find(([re]) => re.test(d)) || [])[1];
+    let t = 2;
+    if (/furious|scream|hysteri|崩溃|暴怒|尖叫/i.test(d)) t = 5;
+    else if (/sob|crying|intense|desperate|panic|shout|strong(?:ly)? (?:emotion|anger|fear|grief)|哭|强烈|绝望/i.test(d)) t = 4;
+    else if (/relaxed|lighthearted|casual|轻松/i.test(d)) t = 2;
+    else if (/anxi|urgent|excit|energetic|triumph|boast|raises|concern|angry|emphasi|焦急|兴奋|激动/i.test(d)) t = 3;
+    else if (/calm|flat|neutral|平静/i.test(d)) t = 1;
+    let pace = 'normal';
+    if (/very slow|极慢/i.test(d)) pace = 'very_slow';
+    else if (/rapid[- ]fire|very fast|breakneck/i.test(d)) pace = 'very_fast';
+    else if (/quicken|fast|rapid|hurr|urgent|快/i.test(d)) pace = 'fast';
+    else if (/slow|drawn[- ]out|lingering|慢/i.test(d)) pace = 'slow';
+    return { tags: [emo, voice].filter(Boolean), t, pace };
+}
+
 function normItem(v) {
     const tags = [].concat(first(v, ['label', 'labels', 'tag', 'tags', 'emotion', 'emotions', 'style']) ?? []).flatMap(x => String(x).split(/[,，、;；]/)).map(x => x.replace(/[\[\]]/g, '').trim().toLowerCase()).filter(Boolean);
     return {
@@ -232,6 +287,7 @@ function normItem(v) {
         reason: first(v, ['reason', 'why', 'note', 'explanation', 'rationale']),
         content: first(v, ['content', 'line', 'text', 'script', 'annotated', 'annotated_text', 'annotated_line', 'output']),
         ambience: first(v, ['ambience', 'ambient', 'environment', 'scene_sound']),
+        desc: first(v, ['acoustic', 'acoustics', 'description', 'delivery', 'direction', 'performance', 'voice', 'vocal', 'instruction', 'instructions', 'style_note', 'notes', 'tone']),
         tags
     };
 }
@@ -246,7 +302,11 @@ export function parseDeep(raw, lines) {
         const id = Number(String(v?.id ?? '').replace(/[^\d]/g, '')) || Number(v?.id);
         const line = byId.get(id);
         if (!line || items.has(id)) return;
-        const t = normTension(v?.tension_level ?? v?.tension);
+        const hint = typeof v?.desc === 'string' ? descToHints(v.desc) : null;
+        if (hint && !v.tags?.length) v.tags = hint.tags;
+        if (hint && !v.pace) v.pace = hint.pace;
+        if (hint && !v.reason) v.reason = String(v.desc).slice(0, 30);
+        const t = normTension(v?.tension_level ?? v?.tension) || (hint ? hint.t : 0);
         let content = typeof v?.content === 'string' ? v.content : '';
         if (v.tags?.length && !/\[[^\]\n]{1,40}\]/.test(content)) {
             const known = v.tags.map(x => (KNOWN_TAGS.has(x) ? x : TAG_ALIAS[x])).filter(Boolean).slice(0, 2);

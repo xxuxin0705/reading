@@ -212,7 +212,12 @@ function injectStyle() {
 .yzsv-ed-foot .ghost { background: #f1f1f5; color: #555; }
 .yzsv-ed-fold, .yzsv-ed-tiptog, .yzsv-ed-foldall { flex: 0 0 auto; border: 0; border-radius: 8px; padding: 4px 9px; font-size: 12px; cursor: pointer; font-family: inherit; background: #f1eefa; color: #6b54a8; }
 .yzsv-ed-raw { margin-top: 8px; font-size: 12px; color: #6b54a8; }
-.yzsv-ed-raw summary { cursor: pointer; }
+.yzsv-ed-raw summary { cursor: pointer; display: flex; align-items: center; gap: 8px; }
+.yzsv-ed-raw summary { list-style: none; }
+.yzsv-ed-raw summary::-webkit-details-marker { display: none; }
+.yzsv-ed-raw summary::before { content: '▸'; font-size: 11px; }
+.yzsv-ed-raw[open] summary::before { content: '▾'; }
+.yzsv-ed-copyraw { margin-left: auto; border: 0; border-radius: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-family: inherit; background: #f1eefa; color: #6b54a8; }
 .yzsv-ed-raw pre { margin: 6px 0 0; max-height: 34vh; overflow: auto; overscroll-behavior: contain; white-space: pre-wrap; word-break: break-all; background: #f4f6fb; border-radius: 9px; padding: 8px; color: #445; font-size: 11.5px; }
 .yzsv-ed-tiprow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .yzsv-ed-tiprow .grow { flex: 1; }
@@ -330,8 +335,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 <div class="yzsv-ed-amb">🎬 这一楼的情节<select class="yzsv-ed-tone">${['', ...TONES].map(x => `<option value="${esc(x)}" ${x === curTone ? 'selected' : ''}>${x ? (x === '亲密' ? '亲密（NSFW）' : x) : '没判断'}</option>`).join('')}</select>${analyzed && !single ? `<input class="yzsv-ed-arc" value="${esc(entry.arc || '')}" placeholder="情绪走向" style="flex:1;min-width:0;border:1px solid #e3e3ea;border-radius:9px;padding:5px 8px;font-size:13px;background:#f8f8fb;">` : ''}</div>
                 <div class="yzsv-ed-amb">🌧 这一楼开头的环境声<select class="yzsv-ed-ambsel">${Object.entries(AMBIENCE_LABELS).map(([k, l]) => `<option value="${k}" ${k === (entry.ambience || 'none') ? 'selected' : ''}>${l}</option>`).join('')}</select><button type="button" class="yzsv-ed-ambtry" style="border:0;background:#f1f1f5;border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;">试听</button></div>
                 <div class="yzsv-ed-tiprow"><button type="button" class="yzsv-ed-tiptog">说明 收起 ▴</button><span class="grow"></span>${bars.length > 1 ? '<button type="button" class="yzsv-ed-foldall" data-fold="1">全部收起 ▴</button>' : ''}</div>
-                ${analyzed && entry.raw ? `<details class="yzsv-ed-raw"><summary>🧾 看模型的原始回复</summary><pre class="yzsv-scrollbox">${esc(entry.raw)}</pre></details>` : ''}
                 <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高情绪越强；语速在播放时直接变快变慢（不用重新生成）。每句上面写了这个人用的渠道和它认什么：不同渠道下面能选的选项不一样，虚线框里是实际会发过去的内容。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。点「生成一版试听」只调用语音接口生成这一句（不会调用分析模型），可以反复生成、来回对比，保存时只留选中的那版。</div>
+                ${analyzed && entry.raw ? `<details class="yzsv-ed-raw"><summary>🧾 看模型的原始回复<button type="button" class="yzsv-ed-copyraw" title="复制模型的原始回复">复制</button></summary><pre class="yzsv-scrollbox">${esc(entry.raw)}</pre></details>` : ''}
             </div>
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
             <div class="yzsv-ed-foot"><button type="button" class="ghost yzsv-ed-cancel">关闭</button><button type="button" class="primary yzsv-ed-save">${single ? '保存' : '保存全部'}</button></div>
@@ -582,6 +587,22 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             trial = startAmbience(kind, (Number(settings.ambienceVol) || 30) / 100);
             b.textContent = '停止';
             setTimeout(() => { if (trial) { trial.stop(); trial = null; b.textContent = '试听'; } }, 6000);
+            return;
+        }
+        const copyBtn = e.target.closest('.yzsv-ed-copyraw');
+        if (copyBtn) {
+            e.preventDefault(); // 别顺带把折叠框开 / 关
+            const text = entry.raw || '';
+            const done = () => { copyBtn.textContent = '已复制 ✓'; setTimeout(() => { copyBtn.textContent = '复制'; }, 1500); };
+            const fallback = () => {
+                const ta = document.createElement('textarea');
+                ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+                document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+                let ok = false; try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+                ta.remove();
+                if (ok) done(); else sv._toast('复制失败', '浏览器不让复制：展开后长按里面的文字自己复制');
+            };
+            if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
             return;
         }
         // 收起 / 展开：说明、单句、整楼全部

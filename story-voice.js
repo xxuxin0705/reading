@@ -6,9 +6,9 @@ import { startAmbience, AMBIENCE_LABELS } from './ambience.js';
 import { adaptScript, channelProfile } from './tts-adapt.js';
 import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
-import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
+import { buildDeepMessages, DEEP_SCHEMA, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.2.6'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.2.8'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -361,13 +361,13 @@ export class StoryVoice {
             this._refreshDeepStatus(id);
             // Gemini 2.5 Pro 这类会思考的模型：思考也算在输出长度里，给够长度；回答没法读就再要一次
             const timeout = (Number(s.deepTimeout) || 150) * 1000;
-            let raw = await this._callModel(messages, { timeout, maxTokens: 16000 });
+            let raw = await this._callModel(messages, { timeout, maxTokens: 16000, jsonSchema: DEEP_SCHEMA });
             let parsed = parseDeep(raw, items);
             if (parsed && !parsed.useful && !parsed.tone) parsed = null; // 读出来是空的（没有情绪、没有标注）：当成没读懂，再要一次
             if (!parsed) {
                 console.warn('[正文朗读] 深度分析第一次的回答没法读，再试一次：', String(raw).slice(0, 2000));
                 const again = [...messages, { role: 'assistant', content: String(raw || '').slice(0, 400) }, { role: 'user', content: '上面的回答不是要求的格式。只输出一个 JSON 对象（以 { 开头、以 } 结尾），不要思考过程、不要解释、不要代码块。' }];
-                raw = await this._callModel(again, { timeout, maxTokens: 16000 });
+                raw = await this._callModel(again, { timeout, maxTokens: 16000, jsonSchema: DEEP_SCHEMA });
                 parsed = parseDeep(raw, items);
                 if (parsed && !parsed.useful && !parsed.tone) {
                     console.warn('[正文朗读] 深度分析的回答里没有可用的内容：', raw);
@@ -420,7 +420,7 @@ export class StoryVoice {
     }
 
     // 后台调用模型：选了连接配置就走那条，否则跟随酒馆当前的 API
-    async _callModel(messages, { timeout = 150000, maxTokens = 6000 } = {}) {
+    async _callModel(messages, { timeout = 150000, maxTokens = 6000, jsonSchema = null } = {}) {
         const ctx = window.SillyTavern?.getContext?.();
         const profile = String(this.getSettings().deepProfile || '');
         const sys = messages.find(m => m.role === 'system')?.content || '';
@@ -434,7 +434,7 @@ export class StoryVoice {
                 return typeof res === 'string' ? res : (res?.content ?? res?.choices?.[0]?.message?.content ?? '');
             }
             if (typeof ctx?.generateRaw === 'function') {
-                try { return await ctx.generateRaw({ systemPrompt: sys, prompt: user, responseLength: maxTokens }); }
+                try { return await ctx.generateRaw({ systemPrompt: sys, prompt: user, responseLength: maxTokens, ...(jsonSchema ? { jsonSchema } : {}) }); }
                 catch (e) { return await ctx.generateRaw(user, null, false, false, sys, maxTokens); }
             }
             if (typeof ctx?.generateQuietPrompt === 'function') return ctx.generateQuietPrompt(`${sys}\n\n${user}`, false, true);
