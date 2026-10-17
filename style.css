@@ -56,3 +56,6 @@
 #yzr-float.is-drag { transition: none; }
 .yzr-bank-row { margin-top: 6px; }
 .yzr-bank-row select { font-size: 12.5px; }
+.yzr-custom-row[hidden] { display: none !important; }
+.yzr-using { margin-top: 6px; }
+.yzr-using b { color: #6b54a8; font-weight: 600; }

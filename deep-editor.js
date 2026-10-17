@@ -263,6 +263,14 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         return tags.length && settings.analysisMode === 'simple' ? `${tags.map(t => `[${t}]`).join('')} ${text}` : text;
     };
 
+    const findBar = (line) => {
+        const q = () => document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(String(line))}"]`);
+        let bar = q();
+        if (!bar) { try { sv.processById(mesid); } catch (e) { /* 忽略 */ } bar = q(); }
+        return bar;
+    };
+    // 生成试听只需要这句的文字：页面上的按钮不在也能生成
+    const lineRef = (row) => findBar(row.dataset.line) || { dataset: { text: row.dataset.text, mesid: String(mesid), line: row.dataset.line, speaker: row.querySelector('.yzsv-ed-spk')?.value.trim() || '' } };
     const profOf = (speaker) => { try { return sv._speakerChannel(speaker).profile; } catch (e) { return { kind: 'inline', name: '', note: '' }; } };
     const chHtml = (prof) => prof?.name ? `<b>🔈 ${esc(prof.name)}</b><span>${esc(prof.note || '')}</span>` : '';
     const toolsHtml = (prof, text, v = {}) => {
@@ -428,6 +436,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                     }
                 }
                 refreshPrev(row);
+                undoNsfw(); // 手动删掉了 🔞 标签：情节也换回去
             }, 300);
         });
     });
@@ -501,7 +510,22 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         ta._sel = null;
     };
 
+    // 面板里还有没有用到 🔞：选中的 🔞 一键演法，或者演法里写着亲密场景才用的标签
+    const NSFW_ONLY = new Set(['moaning', 'moaning softly', 'panting softly', 'seductive', 'holding back', 'satisfied', 'groan']);
+    const usesNsfw = () => Array.from(mask.querySelectorAll('.yzsv-ed-line')).some(row =>
+        !!row.querySelector('[data-preset].is-sel.is-nsfw')
+        || [...row.querySelector('.yzsv-ed-script').value.matchAll(/\[([^\]\n]{1,40})\]/g)].some(m => NSFW_ONLY.has(m[1].trim().toLowerCase())));
+    const undoNsfw = () => {
+        if (!mask._autoNsfw || usesNsfw()) return;
+        const sel = mask.querySelector('.yzsv-ed-tone');
+        if (!sel) return;
+        sel.value = mask._toneBefore ?? '';
+        mask._autoNsfw = false;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        sv._toast('情节已换回', mask._toneBefore ? `「${mask._toneBefore}」（没再用 🔞 的演法）` : '没判断（没再用 🔞 的演法）');
+    };
     mask.querySelector('.yzsv-ed-tone')?.addEventListener('change', (ev) => {
+        if (ev.isTrusted) mask._autoNsfw = false; // 自己改过情节：不再自动换回
         const b = mask.querySelector('.yzsv-ed-nsfw');
         if (b) b.hidden = ev.target.value !== '亲密';
     });
@@ -552,6 +576,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         const toNsfw = () => {
             const sel = mask.querySelector('.yzsv-ed-tone');
             if (!sel || sel.value === '亲密') return;
+            mask._toneBefore = sel.value; // 记下原来的情节：🔞 都取消了就换回去
+            mask._autoNsfw = true;
             sel.value = '亲密';
             sel.dispatchEvent(new Event('change', { bubbles: true }));
             const box = sel.closest('.yzsv-ed-amb');
@@ -565,7 +591,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             // 选中的一键演法标蓝；之后改张力、语速都不会取消选中
             row.querySelectorAll('[data-preset]').forEach(b => b.classList.toggle('is-sel', b === presetBtn));
             row._preset = p?.label || '';
-            if (p?.nsfw) toNsfw();
+            if (p?.nsfw) toNsfw(); else undoNsfw();
             refreshPrev(row);
             return;
         }
@@ -600,6 +626,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             row._preset = '';
             const ta = row.querySelector('.yzsv-ed-script');
             ta.value = ta.value.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim() || row.dataset.text;
+            undoNsfw();
             refreshPrev(row);
             return;
         }
@@ -611,8 +638,9 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             tp.classList.add('is-playing');
             try {
                 if (key === 'orig') {
-                    const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(row.dataset.line)}"]`);
+                    const bar = findBar(row.dataset.line);
                     if (bar) await sv.playBars([bar], { noDeep: true }); // 播保存着的那版（有缓存就不重新请求）
+                    else sv._toast('这句现在没在页面上', '回到这一楼再试，或者直接生成新的一版对比');
                 } else {
                     const tk = row._takes[Number(key)];
                     if (tk) await sv.playTake(tk.urls, tk.rate);
@@ -627,8 +655,9 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             const r = read(row);
             try {
                 if (key === 'orig') {
-                    const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(row.dataset.line)}"]`);
+                    const bar = findBar(row.dataset.line);
                     if (bar) await sv.favoriteBar(bar);
+                    else sv._toast('这句现在没在页面上', '回到这一楼再收藏');
                 } else {
                     const tk = row._takes[Number(key)];
                     if (!tk) return;
@@ -668,8 +697,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 return;
             }
             sv._unlockAudio();
-            const bar = document.querySelector(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar[data-line="${CSS.escape(row.dataset.line)}"]`);
-            if (!bar) { sv._toast('找不到这一句', '正文可能刷新了，关掉再打开试试'); return; }
+            const bar = lineRef(row);
             const r = read(row);
             const draft = { speaker: r.speaker, script: r.script, t: r.t, pace: r.pace };
             const ctl = new AbortController();

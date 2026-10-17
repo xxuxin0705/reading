@@ -160,38 +160,68 @@ function bankSet(lib, ch, list) { lib.store.set(BANK_KEY, { ...bankAll(lib), [ch
 export function bankName(lib, ch, id) { const v = String(id || '').trim(); return v ? (bankOf(lib, ch).find(x => x.id === v)?.name || '') : ''; }
 const shortId = (id) => (String(id).length > 14 ? `${String(id).slice(0, 6)}…${String(id).slice(-4)}` : String(id));
 
-// 一个音色输入框 + 收藏夹（attrs 是输入框自己的属性，比如 data-voice="fish"）
-function voiceBox(lib, ch, value, attrs, placeholder) {
+// 一个音色选择：要么用收藏夹里存的，要么自己填，只有一个是生效的（attrs 是真正存值的输入框的属性）
+function voiceBox(lib, ch, value, attrs, placeholder, { custom = null } = {}) {
     const list = bankOf(lib, ch);
     const cur = String(value || '').trim();
-    return `<div class="yzr-vbox" data-bank-ch="${esc(ch)}">
-        <div class="yzsv-key"><input class="yzsv-input" ${attrs} value="${esc(cur)}" placeholder="${esc(placeholder)}" spellcheck="false" autocomplete="off"><button type="button" class="yzsv-mini yzsv-fetch" data-bank-save title="把这个音色 ID 存进收藏夹">存</button></div>
-        ${list.length ? `<div class="yzsv-key yzr-bank-row"><select class="yzsv-input" data-bank-sel>
-            <option value="">${list.some(x => x.id === cur) ? '' : `— 已存 ${list.length} 个，点选切换 —`}</option>
-            ${list.map(x => `<option value="${esc(x.id)}" ${x.id === cur ? 'selected' : ''}>${esc(x.name)} · ${esc(shortId(x.id))}</option>`).join('')}
-        </select><button type="button" class="yzsv-mini yzsv-fetch" data-bank-del title="从收藏夹删掉选中的">删</button></div>` : ''}
+    const saved = list.find(x => x.id === cur);
+    // 自己填：收藏夹是空的、现在的 ID 不在收藏夹里、或者刚点了「自己填写」
+    const isCustom = custom ?? (!list.length || !saved);
+    const using = saved ? `正在用：<b>${esc(saved.name)}</b>（${esc(shortId(saved.id))}）`
+        : cur ? `正在用：自己填的 <b>${esc(shortId(cur))}</b>${list.length ? '（点「存」起个名字，以后在下拉里切换）' : ''}`
+            : `还没选音色${placeholder ? `（${esc(placeholder)}）` : ''}`;
+    return `<div class="yzr-vbox" data-bank-ch="${esc(ch)}" data-custom="${isCustom ? '1' : '0'}">
+        ${list.length ? `<div class="yzsv-key"><select class="yzsv-input" data-bank-sel>
+            ${list.map(x => `<option value="${esc(x.id)}" ${!isCustom && x.id === cur ? 'selected' : ''}>${esc(x.name)} · ${esc(shortId(x.id))}</option>`).join('')}
+            <option value="__custom__" ${isCustom ? 'selected' : ''}>✎ 自己填写音色 ID</option>
+        </select>${!isCustom ? '<button type="button" class="yzsv-mini yzsv-fetch" data-bank-del title="从收藏夹删掉这个音色">删</button>' : ''}</div>` : ''}
+        <div class="yzsv-key yzr-custom-row" ${isCustom ? '' : 'hidden'} style="${list.length ? 'margin-top:6px' : ''}"><input class="yzsv-input" ${attrs} value="${esc(cur)}" placeholder="${esc(placeholder)}" spellcheck="false" autocomplete="off"><button type="button" class="yzsv-mini yzsv-fetch" data-bank-save title="起个名字存进收藏夹">存</button></div>
+        <div class="yzsv-note yzr-using">${using}</div>
     </div>`;
 }
 
-// 收藏夹的按钮：存 / 选 / 删（事件委托，页面重画也不用重新绑）
+// 收藏夹的按钮：选 / 存 / 删（事件委托，页面重画也不用重新绑）
 function bindBank(root, lib, toast) {
     if (root.__yzrBank) return;
     root.__yzrBank = true;
-    const redraw = (box) => {
+    const redraw = (box, opts = {}) => {
         const inp = box.querySelector('input.yzsv-input');
         const attrs = Array.from(inp.attributes).filter(a => !['class', 'value', 'placeholder', 'spellcheck', 'autocomplete'].includes(a.name)).map(a => `${a.name}="${esc(a.value)}"`).join(' ');
         const tmp = document.createElement('div');
-        tmp.innerHTML = voiceBox(lib, box.dataset.bankCh, inp.value, attrs, inp.placeholder);
-        box.replaceWith(tmp.firstElementChild);
+        tmp.innerHTML = voiceBox(lib, box.dataset.bankCh, inp.value, attrs, inp.placeholder, opts);
+        const next = tmp.firstElementChild;
+        box.replaceWith(next);
+        return next;
     };
+    const commit = (inp) => inp.dispatchEvent(new Event('change', { bubbles: true })); // NPC 音色：改了就保存
     root.addEventListener('change', (ev) => {
         const sel = ev.target.closest('[data-bank-sel]');
-        if (!sel || !sel.value) return;
-        const box = sel.closest('.yzr-vbox');
-        const inp = box.querySelector('input.yzsv-input');
-        inp.value = sel.value;
-        inp.dispatchEvent(new Event('change', { bubbles: true })); // NPC 音色：选了就保存
-        toast('已切换', `${bankName(lib, box.dataset.bankCh, sel.value)}（${shortId(sel.value)}）`);
+        if (sel) {
+            const box = sel.closest('.yzr-vbox');
+            const inp = box.querySelector('input.yzsv-input');
+            if (sel.value === '__custom__') {
+                inp.value = '';
+                const nb = redraw(box, { custom: true });
+                nb.querySelector('input.yzsv-input')?.focus();
+                return;
+            }
+            inp.value = sel.value;
+            const nb = redraw(box, { custom: false });
+            commit(nb.querySelector('input.yzsv-input'));
+            toast('已切换', `${bankName(lib, box.dataset.bankCh, sel.value)}（${shortId(sel.value)}）`);
+            return;
+        }
+        // 自己填的 ID 正好是收藏夹里的：直接显示成那个名字
+        const inp = ev.target.closest('.yzr-vbox input.yzsv-input');
+        if (inp && ev.isTrusted) {
+            const box = inp.closest('.yzr-vbox');
+            const id = String(inp.value || '').trim();
+            const hit = bankOf(lib, box.dataset.bankCh).some(x => x.id === id);
+            if (hit) { redraw(box, { custom: false }); return; }
+            // 只更新「正在用」那一行，不重画（不然紧接着点「存」会点空）
+            const using = box.querySelector('.yzr-using');
+            if (using) using.innerHTML = id ? `正在用：自己填的 <b>${esc(shortId(id))}</b>${bankOf(lib, box.dataset.bankCh).length ? '（点「存」起个名字，以后在下拉里切换）' : ''}` : '还没选音色';
+        }
     });
     root.addEventListener('click', (ev) => {
         const save = ev.target.closest('[data-bank-save]');
@@ -200,23 +230,24 @@ function bindBank(root, lib, toast) {
         const box = (save || del).closest('.yzr-vbox');
         const ch = box.dataset.bankCh;
         const list = bankOf(lib, ch);
+        const inp = box.querySelector('input.yzsv-input');
         if (save) {
-            const id = String(box.querySelector('input.yzsv-input').value || '').trim();
+            const id = String(inp.value || '').trim();
             if (!id) { toast('还没填', '先填好音色 ID 再存'); return; }
             const old = list.find(x => x.id === id);
-            const name = String(window.prompt('给这个音色起个名字（比如：少年清亮、温柔御姐）', old?.name || `音色 ${list.length + 1}`) || '').trim();
+            const name = String(window.prompt('给这个音色起个名字（比如：活泼、少年清亮、温柔御姐）', old?.name || `音色 ${list.length + 1}`) || '').trim();
             if (!name) return;
             bankSet(lib, ch, [...list.filter(x => x.id !== id), { name: name.slice(0, 20), id }]);
             toast('已存', `「${name}」以后在下拉里一点就能切换`);
-            redraw(box);
+            commit(redraw(box, { custom: false }).querySelector('input.yzsv-input'));
             return;
         }
-        const id = box.querySelector('[data-bank-sel]')?.value;
+        const id = String(inp.value || '').trim();
         const hit = list.find(x => x.id === id);
-        if (!hit) { toast('先选一个', '在下拉里选中要删的音色'); return; }
-        if (!window.confirm(`从收藏夹删掉「${hit.name}」？（已经用着它的人不受影响）`)) return;
+        if (!hit) return;
+        if (!window.confirm(`从收藏夹删掉「${hit.name}」？\n现在这里还是用这个音色 ID，只是不再显示名字；已经用着它的别人也不受影响。`)) return;
         bankSet(lib, ch, list.filter(x => x.id !== id));
-        redraw(box);
+        redraw(box, { custom: true });
     });
 }
 

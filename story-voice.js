@@ -8,6 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
+export const SV_VERSION = '1.2.0'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -388,7 +389,7 @@ export class StoryVoice {
 
     _refreshDeepStatus(id) {
         const el = document.querySelector(`#chat .mes[mesid="${id}"] .mes_text`);
-        if (!el || this._streaming) return;
+        if (!el || this._isLive()) return;
         this.processById(id);
     }
 
@@ -1097,7 +1098,7 @@ export class StoryVoice {
         const box = mesEl?.querySelector?.('.mes_text');
         if (!box || box.querySelector('textarea')) return false;
         const chat = window.SillyTavern?.getContext?.()?.chat || [];
-        if (this._streaming && Number(mesEl.getAttribute('mesid')) === chat.length - 1) return false; // 生成中的那楼由边写边挂处理
+        if (this._isLive() && Number(mesEl.getAttribute('mesid')) === chat.length - 1) return false; // 生成中的那楼由边写边挂处理
         if (box.dataset.yzsvSig !== this._boxSig(mesEl)) return true;
         return box.dataset.yzsvHas === '1' && (!box.querySelector('.yzsv-bar') || !box.querySelector('.yzsv-all'));
     }
@@ -1397,7 +1398,7 @@ export class StoryVoice {
                     this._ready = this._ready || new Set();
                     this._ready.add(this._readyKey(job.speaker, job.text));
                     if (this._ready.size > 2000) this._ready = new Set([...this._ready].slice(-1000));
-                    if (this._streaming) this._scheduleLive();
+                    if (this._isLive()) this._scheduleLive();
                 } catch (err) {
                     console.warn('[正文朗读] 提前生成失败:', err);
                     this._prefetchSeen?.delete(job.key);
@@ -1441,8 +1442,22 @@ export class StoryVoice {
     }
 
     // 流式生成中：藏掉 [[名字]]；每句台词一说完（引号闭合）就马上开始生成语音
+    // 真的在生成：最近 4 秒内还有字进来。别的插件后台生成、生成被打断没发结束事件时，
+    // _streaming 可能一直是 true，最后一楼就一直按「生成中」处理、按钮挂不上——这里兜住
+    _isLive() {
+        return !!this._streaming && Date.now() - (this._lastTokenAt || 0) < 4000;
+    }
+
     _onStreamToken() {
         this._streaming = true;
+        this._lastTokenAt = Date.now();
+        clearTimeout(this._liveWatch);
+        this._liveWatch = setTimeout(() => {
+            if (Date.now() - (this._lastTokenAt || 0) < 4000) return;
+            this._streaming = false;
+            const chat = window.SillyTavern?.getContext?.()?.chat || [];
+            this.processById(chat.length - 1);
+        }, 4500);
         this._scheduleLive();
         if (this._streamTimer) return;
         this._streamTimer = setTimeout(() => {
@@ -1477,7 +1492,7 @@ export class StoryVoice {
         this._markRaf = requestAnimationFrame(() => {
             this._markRaf = 0;
             this._hideLiveMarks();
-            if (!this._streaming) return;
+            if (!this._isLive()) return;
             const chat = window.SillyTavern?.getContext?.()?.chat || [];
             const el = document.querySelector(`#chat .mes[mesid="${chat.length - 1}"]`);
             if (el) { try { this.processElement(el, { live: true }); } catch (e) { /* 忽略 */ } }
@@ -2653,6 +2668,7 @@ export class StoryVoiceApp {
                         <button type="button" class="yzsv-mini" id="yzsv-clear">清缓存</button>
                     </div>
                     <div class="yzsv-note" style="margin:8px 6px 0;">每句语音生成后会缓存，再点 ▶ 不会重复扣费。「试听」用默认音色；角色、NPC 的音色在「角色库」里配。</div>
+                    <div class="yzsv-note" style="margin:10px 6px 0;text-align:center;opacity:.7">正文朗读 v${SV_VERSION}</div>
                 </div>
             </div>`;
         this.phoneShell.setContent(html, 'story-voice');
