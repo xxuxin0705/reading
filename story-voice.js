@@ -9,7 +9,8 @@ import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
 const STORE_KEY = 'phone-story-voice';
-const LOCAL_SETTINGS_KEY = 'yzr-settings-local';     // 设置的本机备份（带时间，取最新的）
+const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
+const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
 const DEEP_KEY = 'phone-story-voice-deep';          // 旧版本存放位置（会自动搬走）
 const DEEP_LOCAL_KEY = 'yzr-deep-analysis-cache';    // 现在：只存浏览器本地
 const DEEP_MAX = 100;
@@ -557,11 +558,18 @@ export class StoryVoice {
         try { raw = this.storage?.get?.(STORE_KEY, false); } catch (e) { raw = null; }
         let obj = {};
         try { obj = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {}; } catch (e) { obj = {}; }
-        // 本机备份：酒馆设置还没存到服务器就刷新、或者被别的页面用旧设置覆盖时，以本机最新改的为准
-        try {
-            const bak = JSON.parse(localStorage.getItem(LOCAL_SETTINGS_KEY) || 'null');
-            if (bak && typeof bak === 'object' && Number(bak._at || 0) > Number(obj?._at || 0)) obj = bak;
-        } catch (e) { /* 忽略 */ }
+        // 本机备份只在这一页第一次读设置时看一次：别的标签页、别的插件后来写的旧设置不会再把这里改掉
+        if (!this._bakChecked) {
+            this._bakChecked = true;
+            try {
+                const bak = JSON.parse(localStorage.getItem(LOCAL_SETTINGS_KEY) || 'null');
+                if (bak && typeof bak === 'object' && Number(bak._at || 0) > Number(obj?._at || 0)) {
+                    obj = bak;
+                    this.storage?.set?.(STORE_KEY, JSON.stringify(bak));
+                }
+                localStorage.removeItem(OLD_LOCAL_SETTINGS_KEY); // 旧版本的备份（和别的插件撞名）不再用
+            } catch (e) { /* 忽略 */ }
+        }
         const s = { ...DEFAULTS, ...(obj && typeof obj === 'object' ? obj : {}) };
         if (!['simple', 'deep', 'manual'].includes(s.analysisMode)) s.analysisMode = 'simple'; // 旧版的 none = 简单分析
         s.nsfw = !!s.nsfw;
@@ -702,7 +710,7 @@ export class StoryVoice {
         btn?.classList.add('is-busy');
         bar.classList.add('is-loading');
         let analyzed = false;
-        if (this.getSettings().analysisMode === 'deep' && !bar.dataset.deep) {
+        if (this.getSettings().analysisMode === 'deep' && !bar.dataset.deep && !this._barEdited(bar)) {
             const mid = Number(bar.dataset.mesid);
             const line = bar.dataset.line;
             const msg = window.SillyTavern?.getContext?.()?.chat?.[mid];
@@ -2032,7 +2040,15 @@ export class StoryVoice {
         this.playBars(bars, { trigger });
     }
 
-    async playBars(bars, { regen = false, trigger = null, prepared = null } = {}) {
+    // 这句在 🎭 里手动改过（或者正在编辑面板里试听）：只按手动的读，不去分析整楼
+    _barEdited(bar) {
+        try {
+            const msg = window.SillyTavern?.getContext?.()?.chat?.[Number(bar.dataset.mesid)];
+            return !!this._lineEntry(msg)?.lines?.[bar.dataset.text]?.edited;
+        } catch (e) { return false; }
+    }
+
+    async playBars(bars, { regen = false, trigger = null, prepared = null, noDeep = false } = {}) {
         const same = this.playing && this.playing.trigger === trigger && trigger;
         this.stop();
         if (same) return; // 再点一次 = 停止
@@ -2048,9 +2064,10 @@ export class StoryVoice {
             const mid = Number(bars[0]?.dataset?.mesid);
             const msg = window.SillyTavern?.getContext?.()?.chat?.[mid];
             const h = msg ? this._deepHashOf(msg) : '';
-            const needStart = h && !this._deepJobs.has(h) && !this._deepEntry(msg);
+            const manual = noDeep || (bars.length === 1 && this._barEdited(bars[0]));
+            const needStart = h && !manual && !this._deepJobs.has(h) && !this._deepEntry(msg);
             if (needStart) this._startDeep(mid);
-            if (h && this._deepJobs.has(h)) {
+            if (h && !manual && this._deepJobs.has(h)) {
                 announce = true;
                 bars.forEach(b => b.classList.add('is-loading'));
                 trigger?.classList.add('is-busy');

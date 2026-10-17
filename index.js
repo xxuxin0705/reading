@@ -115,7 +115,7 @@ function addFloatButton() {
     btn.setAttribute('aria-label', '打开正文朗读');
     btn.innerHTML = '<i class="fa-solid fa-volume-high" aria-hidden="true"></i>';
     document.body.appendChild(btn);
-    const size = 46;
+    const size = 36;
     const clamp = (x, y) => [Math.max(4, Math.min(window.innerWidth - size - 4, x)), Math.max(4, Math.min(window.innerHeight - size - 4, y))];
     const place = (x, y) => { const [cx, cy] = clamp(x, y); btn.style.left = `${cx}px`; btn.style.top = `${cy}px`; };
     let pos = null;

@@ -590,7 +590,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                     + `<div>环境声：${amb === 'none' ? '无' : esc(AMBIENCE_LABELS[amb] || amb)}${amb !== 'none' ? '（环境声是另外叠的，听着不对可以先在设置里关掉对比）' : ''}</div>`;
             };
             try {
-                await sv.playBars([bar], { trigger: bar.querySelector('.yzsv-play'), regen: true }); // 面板里点生成：每次都清掉旧的重新请求
+                await sv.playBars([bar], { trigger: bar.querySelector('.yzsv-play'), regen: true, noDeep: true }); // 手动调的这一句：不调用分析模型 // 面板里点生成：每次都清掉旧的重新请求
             } finally {
                 showSent();
                 if (play._run === run) {

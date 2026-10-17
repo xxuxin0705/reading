@@ -24,9 +24,20 @@ export function currentCardKey() {
     return String(ch?.avatar || c.name2 || '').trim();
 }
 
-export function currentChatKey() {
+// 有没有打开具体的聊天（聊天列表 / 首页时没有）
+export function isChatOpen() {
     const c = ctx();
-    return String(c.chatId || c.chatMetadata?.main_chat || currentCardKey() || 'default');
+    return !!String(c.chatId || '').trim() && (c.characterId !== undefined || !!c.groupId);
+}
+
+// 角色跟着聊天文件走；没打开聊天时为空
+export function currentChatKey() {
+    return isChatOpen() ? String(ctx().chatId) : '';
+}
+
+// 「我」跟着酒馆当前的用户人设走（所有聊天共用）
+export function currentPersonaKey() {
+    return String(ctx().name1 || '').trim();
 }
 
 export class VoiceLibrary {
@@ -53,28 +64,49 @@ export class VoiceLibrary {
 
     remove(id) { this.save(this.list().filter(x => x.id !== id)); }
 
-    // 聊天独立角色库。默认角色若被删除，记录删除状态，避免下次打开又出现。
+    // 聊天独立角色库：第一次打开这个聊天时，把角色卡的角色放进来（删掉后不会再自动加回来）
     ensureChat() {
         const key = currentChatKey();
+        if (!key) return;
         const done = this.store.get('yzr-chat-initialized', {});
         if (done[key]) return;
         const c = ctx();
-        const legacy = this.list().filter(x => !x.chatKey && (!x.cardKey || x.cardKey === currentCardKey()));
+        const legacy = this.list().filter(x => !x.chatKey && !x.personaKey && !x.isUser && (!x.cardKey || x.cardKey === currentCardKey()));
         const entries = legacy.map(x => ({ ...x, id: `chat_${key}_${x.id}`, chatKey: key, cardKey: '' }));
-        const names = [[String(c.name2 || '').trim(), false], [String(c.name1 || '').trim(), true]];
-        for (const [name, isUser] of names) {
-            if (name && !entries.some(x => x.name === name || (isUser && x.isUser))) {
-                entries.push({ id: `chat_${key}_${isUser ? 'user' : 'char'}`, name, aliases: [], gender: '', voices: {}, provider: '', readings: [], isUser, chatKey: key, cardKey: '' });
-            }
+        const name = String(c.name2 || '').trim();
+        if (name && !c.groupId && !entries.some(x => x.name === name)) {
+            entries.push({ id: `chat_${key}_char`, name, aliases: [], gender: '', voices: {}, provider: '', readings: [], tags: [], isUser: false, chatKey: key, cardKey: '' });
         }
         this.store.set('yzr-library', [...this.list(), ...entries]);
         this.store.set('yzr-chat-initialized', { ...done, [key]: true });
     }
 
+    // 当前用户人设的「我」：没有就从旧版（每个聊天各存一个）搬过来，再没有就新建一个空的
+    ensurePersona() {
+        const pk = currentPersonaKey();
+        if (!pk) return null;
+        const list = this.list();
+        const hit = list.find(x => x.isUser && x.personaKey === pk);
+        if (hit) return hit;
+        const key = currentChatKey();
+        const old = list.find(x => x.isUser && !x.personaKey && key && x.chatKey === key && (x.name === pk || (x.aliases || []).includes(pk)))
+            || list.filter(x => x.isUser && !x.personaKey && (x.name === pk || (x.aliases || []).includes(pk)))
+                .sort((m, n) => Object.keys(n.voices || {}).length - Object.keys(m.voices || {}).length)[0];
+        const me = old
+            ? { ...old, id: `me_${Date.now()}`, personaKey: pk, chatKey: '' }
+            : { id: `me_${Date.now()}`, name: pk, aliases: [], gender: '', voices: {}, provider: '', readings: [], tags: [], isUser: true, personaKey: pk, chatKey: '', cardKey: '' };
+        this.store.set('yzr-library', [...list, me]);
+        return me;
+    }
+
     active() {
         this.ensureChat();
+        const me = this.ensurePersona();
         const key = currentChatKey();
-        return this.list().filter(x => x.chatKey === key);
+        const chars = key ? this.list().filter(x => x.chatKey === key && !x.isUser) : [];
+        const pk = currentPersonaKey();
+        const mine = me ? this.list().find(x => x.isUser && x.personaKey === pk) : null;
+        return mine ? [mine, ...chars] : chars;
     }
 
     count() { return this.active().length; }
@@ -120,6 +152,74 @@ function allTags(lib) {
     return [...new Set([...PRESET_TAGS, ...used])];
 }
 
+// ---------- 音色收藏夹：每个渠道存一组「名字 → 音色 ID」，所有人、所有聊天共用，点一下切换 ----------
+const BANK_KEY = 'yzr-voice-bank';
+function bankAll(lib) { const v = lib.store.get(BANK_KEY, {}); return v && typeof v === 'object' ? v : {}; }
+function bankOf(lib, ch) { const l = bankAll(lib)[ch]; return Array.isArray(l) ? l.filter(x => x && x.id) : []; }
+function bankSet(lib, ch, list) { lib.store.set(BANK_KEY, { ...bankAll(lib), [ch]: list }); }
+export function bankName(lib, ch, id) { const v = String(id || '').trim(); return v ? (bankOf(lib, ch).find(x => x.id === v)?.name || '') : ''; }
+const shortId = (id) => (String(id).length > 14 ? `${String(id).slice(0, 6)}…${String(id).slice(-4)}` : String(id));
+
+// 一个音色输入框 + 收藏夹（attrs 是输入框自己的属性，比如 data-voice="fish"）
+function voiceBox(lib, ch, value, attrs, placeholder) {
+    const list = bankOf(lib, ch);
+    const cur = String(value || '').trim();
+    return `<div class="yzr-vbox" data-bank-ch="${esc(ch)}">
+        <div class="yzsv-key"><input class="yzsv-input" ${attrs} value="${esc(cur)}" placeholder="${esc(placeholder)}" spellcheck="false" autocomplete="off"><button type="button" class="yzsv-mini yzsv-fetch" data-bank-save title="把这个音色 ID 存进收藏夹">存</button></div>
+        ${list.length ? `<div class="yzsv-key yzr-bank-row"><select class="yzsv-input" data-bank-sel>
+            <option value="">${list.some(x => x.id === cur) ? '' : `— 已存 ${list.length} 个，点选切换 —`}</option>
+            ${list.map(x => `<option value="${esc(x.id)}" ${x.id === cur ? 'selected' : ''}>${esc(x.name)} · ${esc(shortId(x.id))}</option>`).join('')}
+        </select><button type="button" class="yzsv-mini yzsv-fetch" data-bank-del title="从收藏夹删掉选中的">删</button></div>` : ''}
+    </div>`;
+}
+
+// 收藏夹的按钮：存 / 选 / 删（事件委托，页面重画也不用重新绑）
+function bindBank(root, lib, toast) {
+    if (root.__yzrBank) return;
+    root.__yzrBank = true;
+    const redraw = (box) => {
+        const inp = box.querySelector('input.yzsv-input');
+        const attrs = Array.from(inp.attributes).filter(a => !['class', 'value', 'placeholder', 'spellcheck', 'autocomplete'].includes(a.name)).map(a => `${a.name}="${esc(a.value)}"`).join(' ');
+        const tmp = document.createElement('div');
+        tmp.innerHTML = voiceBox(lib, box.dataset.bankCh, inp.value, attrs, inp.placeholder);
+        box.replaceWith(tmp.firstElementChild);
+    };
+    root.addEventListener('change', (ev) => {
+        const sel = ev.target.closest('[data-bank-sel]');
+        if (!sel || !sel.value) return;
+        const box = sel.closest('.yzr-vbox');
+        const inp = box.querySelector('input.yzsv-input');
+        inp.value = sel.value;
+        inp.dispatchEvent(new Event('change', { bubbles: true })); // NPC 音色：选了就保存
+        toast('已切换', `${bankName(lib, box.dataset.bankCh, sel.value)}（${shortId(sel.value)}）`);
+    });
+    root.addEventListener('click', (ev) => {
+        const save = ev.target.closest('[data-bank-save]');
+        const del = ev.target.closest('[data-bank-del]');
+        if (!save && !del) return;
+        const box = (save || del).closest('.yzr-vbox');
+        const ch = box.dataset.bankCh;
+        const list = bankOf(lib, ch);
+        if (save) {
+            const id = String(box.querySelector('input.yzsv-input').value || '').trim();
+            if (!id) { toast('还没填', '先填好音色 ID 再存'); return; }
+            const old = list.find(x => x.id === id);
+            const name = String(window.prompt('给这个音色起个名字（比如：少年清亮、温柔御姐）', old?.name || `音色 ${list.length + 1}`) || '').trim();
+            if (!name) return;
+            bankSet(lib, ch, [...list.filter(x => x.id !== id), { name: name.slice(0, 20), id }]);
+            toast('已存', `「${name}」以后在下拉里一点就能切换`);
+            redraw(box);
+            return;
+        }
+        const id = box.querySelector('[data-bank-sel]')?.value;
+        const hit = list.find(x => x.id === id);
+        if (!hit) { toast('先选一个', '在下拉里选中要删的音色'); return; }
+        if (!window.confirm(`从收藏夹删掉「${hit.name}」？（已经用着它的人不受影响）`)) return;
+        bankSet(lib, ch, list.filter(x => x.id !== id));
+        redraw(box);
+    });
+}
+
 export function renderLibrary(app, lib, { editId = null } = {}) {
     const root = app.phoneShell.rootEl;
     const all = lib.active();
@@ -134,11 +234,13 @@ export function renderLibrary(app, lib, { editId = null } = {}) {
         if (!filled.length) return '还没填音色（不会读）';
         const main = (x.provider && x.voices?.[x.provider]) ? x.provider : filled[0][0];
         const more = filled.length > 1 ? ` 等 ${filled.length} 个渠道` : '';
-        return `${chLabel(main)} · ${String(x.voices[main]).slice(0, 24)}${more}`;
+        const nm = bankName(lib, main, x.voices[main]);
+        return `${chLabel(main)} · ${nm || String(x.voices[main]).slice(0, 24)}${more}`;
     };
     const tagsInUse = [...new Set(all.flatMap(x => x.tags || []))];
     if (libState.tag && !tagsInUse.includes(libState.tag)) libState.tag = '';
     const byTag = (x) => !libState.tag || (x.tags || []).includes(libState.tag);
+    const chatOpen = isChatOpen();
     const me = all.filter(x => x.isUser);
     const chars = all.filter(x => !x.isUser);
 
@@ -157,6 +259,7 @@ export function renderLibrary(app, lib, { editId = null } = {}) {
     const charList = chars.filter(byTag);
     const npcOn = st.npcMode === 'npc';
     const perPerson = st.channelMode !== 'unified';
+    const npcCh = perPerson && st.npcProvider ? st.npcProvider : defCh; // NPC 音色属于哪个渠道（收藏夹按渠道分）
 
     const html = `
         <div class="yzsv-page">
@@ -165,12 +268,12 @@ export function renderLibrary(app, lib, { editId = null } = {}) {
                 <div class="yzsv-head-title">角色库 <small style="font-weight:400;color:#999;font-size:12px">${all.length}</small></div>
             </div>
             <div class="yzsv-body app-body">
-                <button type="button" class="yzsv-mini is-primary yzr-add-main" data-lib-new>＋ 添加说话人</button>
-                ${charName && !all.some(x => x.name === charName) ? `<button type="button" class="yzsv-mini is-wide yzr-add" data-lib-new data-name="${esc(charName)}">＋ 把当前角色「${esc(charName)}」加进来</button>` : ''}
+                ${chatOpen ? '<button type="button" class="yzsv-mini is-primary yzr-add-main" data-lib-new>＋ 添加说话人</button>' : '<div class="yzsv-note" style="text-align:center;padding:4px 10px 12px;">现在没有打开聊天：这里只显示你当前的用户人设。角色跟着每个聊天文件单独保存，进到具体的聊天里才能看到和添加。</div>'}
+                ${chatOpen && charName && !all.some(x => x.name === charName) ? `<button type="button" class="yzsv-mini is-wide yzr-add" data-lib-new data-name="${esc(charName)}">＋ 把当前角色「${esc(charName)}」加进来</button>` : ''}
                 ${tagsInUse.length ? `<div class="yzsv-frow" style="margin:0 0 10px"><span>标签</span><button type="button" class="yzsv-fchip${!libState.tag ? ' is-on' : ''}" data-tag="">全部</button>${tagsInUse.map(t => `<button type="button" class="yzsv-fchip${libState.tag === t ? ' is-on' : ''}" data-tag="${esc(t)}">#${esc(t)}</button>`).join('')}</div>` : ''}
                 ${meList.length ? `<div class="yzsv-sec">我</div>${meList.map(card).join('')}` : ''}
                 ${charList.length ? `<div class="yzsv-sec">角色 <small style="font-weight:400">${charList.length}</small></div>${charList.map(card).join('')}` : ''}
-                ${!meList.length && !charList.length ? `<div class="yzsv-note" style="text-align:center;padding:18px 10px 22px;">${libState.tag ? `没有带 #${esc(libState.tag)} 的说话人` : '还没有说话人。点「添加说话人」，填名字和音色 ID；<br>名字和正文里 [[名字]] 标的对上就会用这个音色。'}</div>` : ''}
+                ${chatOpen && !meList.length && !charList.length ? `<div class="yzsv-note" style="text-align:center;padding:18px 10px 22px;">${libState.tag ? `没有带 #${esc(libState.tag)} 的说话人` : '还没有说话人。点「添加说话人」，填名字和音色 ID；<br>名字和正文里 [[名字]] 标的对上就会用这个音色。'}</div>` : ''}
 
                 <div class="yzsv-sec" style="margin-top:6px">NPC · 角色库里没有的人</div>
                 <div class="yzsv-card pad">
@@ -189,12 +292,12 @@ export function renderLibrary(app, lib, { editId = null } = {}) {
                         </select>
                         <div class="yzsv-note">下面三个音色 ID 要是这个渠道的。</div>
                     </div>` : `<div class="yzsv-note" style="margin:-4px 0 12px">现在是「统一用一个渠道」，NPC 也用 ${esc(chLabel(defCh))}；下面填这个渠道的音色 ID。</div>`}
-                    <div class="yzsv-field"><label>男 NPC 音色</label><input class="yzsv-input" data-npc-k="npcMale" value="${esc(st.npcMale)}" placeholder="男性配角、路人用这个" spellcheck="false"></div>
-                    <div class="yzsv-field"><label>女 NPC 音色</label><input class="yzsv-input" data-npc-k="npcFemale" value="${esc(st.npcFemale)}" placeholder="女性配角、路人用这个" spellcheck="false"></div>
-                    <div class="yzsv-field"><label>默认音色</label><input class="yzsv-input" data-npc-k="voice" value="${esc(st.voice)}" placeholder="分不出男女时用；留空用渠道的默认音色" spellcheck="false"></div>
+                    <div class="yzsv-field"><label>男 NPC 音色</label>${voiceBox(lib, npcCh, st.npcMale, 'data-npc-k="npcMale"', '男性配角、路人用这个')}</div>
+                    <div class="yzsv-field"><label>女 NPC 音色</label>${voiceBox(lib, npcCh, st.npcFemale, 'data-npc-k="npcFemale"', '女性配角、路人用这个')}</div>
+                    <div class="yzsv-field"><label>默认音色</label>${voiceBox(lib, npcCh, st.voice, 'data-npc-k="voice"', '分不出男女时用；留空用渠道的默认音色')}</div>
                     <div class="yzsv-note">男女怎么判断：模型标的 [[名字/男]] [[名字/女]]；分不出就用默认音色。正文里长按 ↻ 也可以手动指定按男声或女声读。</div>` : ''}
                 </div>
-                <div class="yzsv-note" style="margin:0 6px">角色库只属于当前聊天，换别的聊天不受影响；NPC 设置所有聊天共用。</div>
+                <div class="yzsv-note" style="margin:0 6px">角色跟着每个聊天文件单独保存；「我」跟着酒馆的用户人设走，换人设就换音色；NPC 设置和音色收藏夹所有聊天共用。</div>
             </div>
         </div>`;
     app.phoneShell.setContent(html, 'story-voice');
@@ -209,10 +312,16 @@ export function renderLibrary(app, lib, { editId = null } = {}) {
         toast('已保存', b.dataset.npc === 'npc' ? '所有说话的人都读，库里没有的用 NPC 音色' : '只读角色库里配了音色的人');
         keepScroll();
     }));
-    root.querySelectorAll('[data-npc-k]').forEach(inp => inp.addEventListener('change', () => {
+    // 事件委托：收藏夹切换后输入框会重画，也能保存
+    root.querySelector('.yzsv-body')?.addEventListener('change', (ev) => {
+        const inp = ev.target.closest('[data-npc-k]');
+        if (!inp) return;
         sv.saveSettings({ [inp.dataset.npcK]: String(inp.value || '').trim() });
+        if (inp.dataset.npcK === 'npcProvider') { toast('已保存', 'NPC 改用这个渠道'); keepScroll(); return; }
+        if (!ev.isTrusted) return; // 从收藏夹选的：上面已经提示过「已切换」
         toast('已保存', 'NPC 音色已更新');
-    }));
+    });
+    bindBank(root, lib, toast);
     root.querySelectorAll('.yzr-lib-item').forEach(cardEl => {
         const x = all.find(e => e.id === cardEl.dataset.id);
         cardEl.querySelector('[data-lib-edit]')?.addEventListener('click', () => editEntry(app, lib, x));
@@ -241,12 +350,13 @@ function editEntry(app, lib, x, preset = {}) {
     const e = x ? JSON.parse(JSON.stringify(x)) : { id: `v_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name: '', aliases: [], gender: '', isNpc: false, voices: {}, provider: '', readings: [], tags: [], isUser: false, chatKey: currentChatKey(), cardKey: '', ...preset };
     e.tags = Array.isArray(e.tags) ? e.tags : [];
     e.voices = e.voices && typeof e.voices === 'object' ? e.voices : {};
-    let kind = kindOf(e);
+    const chatOpen = isChatOpen();
+    let kind = chatOpen ? kindOf(e) : 'user';
     const st = app.sv.getSettings();
     const defCh = VOICE_CHANNELS.some(([k]) => k === st.ttsProvider) ? st.ttsProvider : 'fish';
     const chLabel = (k) => (VOICE_CHANNELS.find(([id]) => id === k) || [k, k])[1];
     const mainCh = () => (st.channelMode === 'unified' ? defCh : (e.provider || defCh));
-    const vField = ([k, label, ph]) => `<div class="yzsv-field yzr-vfield" data-vch="${k}"><label>${esc(label)} 音色</label><input class="yzsv-input" data-voice="${k}" value="${esc(e.voices[k] || '')}" placeholder="${esc(ph)}" spellcheck="false" autocomplete="off"></div>`;
+    const vField = ([k, label, ph]) => `<div class="yzsv-field yzr-vfield" data-vch="${k}"><label>${esc(label)} 音色</label>${voiceBox(lib, k, e.voices[k], `data-voice="${k}"`, ph)}</div>`;
     const readRow = (r = {}) => `<div class="yzrd-row"><input class="yzsv-input" data-rd="text" placeholder="写法" value="${esc(r.text || '')}"><i>读作</i><input class="yzsv-input" data-rd="reading" placeholder="读音（假名）" value="${esc(r.reading || '')}"><button type="button" class="yzrd-del">×</button></div>`;
     const tagChips = () => { const base = allTags(lib); return base.concat(e.tags.filter(t => !base.includes(t))).map(t => `<button type="button" data-tagpick="${esc(t)}" class="${e.tags.includes(t) ? 'is-on' : ''}">#${esc(t)}</button>`).join(''); };
     const otherFilled = VOICE_CHANNELS.filter(([k]) => k !== mainCh() && String(e.voices[k] || '').trim()).length;
@@ -260,7 +370,7 @@ function editEntry(app, lib, x, preset = {}) {
             <div class="yzsv-body app-body">
                 <div class="yzsv-card pad">
                     <div class="yzsv-field"><label>这是</label>
-                        <div class="yzsv-seg">${KINDS.map(([k, l]) => `<button type="button" data-kind="${k}" class="${kind === k ? 'is-on' : ''}">${l}</button>`).join('')}</div>
+                        <div class="yzsv-seg">${KINDS.filter(([k]) => chatOpen || k === 'user').map(([k, l]) => `<button type="button" data-kind="${k}" class="${kind === k ? 'is-on' : ''}">${l}</button>`).join('')}</div>
                         <div class="yzsv-note" data-kind-note></div>
                     </div>
                     <div class="yzsv-field"><label>名字（和正文 [[名字]] 标的一样）</label><input class="yzsv-input" data-f="name" value="${esc(e.name)}" placeholder="填写名字"></div>
@@ -302,7 +412,7 @@ function editEntry(app, lib, x, preset = {}) {
     app._fixScroll?.(root);
     const toast = (t, m) => app.phoneShell.showNotification(t, m);
     const kindNote = {
-        user: `你自己的台词用这个音色；酒馆里的用户名${userName ? `「${userName}」` : ''}会自动当成别名。每个聊天只有一个「我」。`,
+        user: `你自己的台词用这个音色。跟着酒馆当前的用户人设${userName ? `「${userName}」` : ''}走，所有聊天共用；换了人设就是另一个「我」。`,
         char: '专门配一个音色：正文里标了这个名字（或别名）的台词都用它读。'
     };
     const applyKind = () => {
@@ -311,6 +421,7 @@ function editEntry(app, lib, x, preset = {}) {
     };
     applyKind();
     root.querySelector('#yzr-ed-back')?.addEventListener('click', () => renderLibrary(app, lib));
+    bindBank(root, lib, toast);
     root.querySelectorAll('[data-kind]').forEach(b => b.addEventListener('click', () => {
         kind = b.dataset.kind;
         const nameInp = root.querySelector('[data-f="name"]');
@@ -372,11 +483,16 @@ function editEntry(app, lib, x, preset = {}) {
         e.readings = Array.from(root.querySelectorAll('.yzrd-row')).map(r => ({ text: r.querySelector('[data-rd="text"]').value.trim(), reading: r.querySelector('[data-rd="reading"]').value.trim() })).filter(r => r.text && r.reading);
         e.tags = [...new Set(e.tags)];
         if (e.isUser) {
-            // 每个聊天只能有一个「我」：原来的「我」改成普通角色
-            const list = lib.list().map(y => (y.id !== e.id && y.isUser && y.chatKey === currentChatKey()) ? { ...y, isUser: false } : y);
-            lib.store.set('yzr-library', list);
+            // 一个用户人设只有一个「我」：换成这次保存的
+            const pk = currentPersonaKey();
+            lib.store.set('yzr-library', lib.list().filter(y => y.id === e.id || !(y.isUser && y.personaKey === pk)));
+            e.personaKey = pk;
+            e.chatKey = '';
+        } else {
+            if (!currentChatKey()) { toast('没有打开聊天', '角色跟着聊天保存，先进到具体的聊天里'); return; }
+            e.personaKey = '';
+            e.chatKey = currentChatKey();
         }
-        e.chatKey = currentChatKey();
         lib.upsert(e);
         toast('已保存', `${e.name} 的音色设置好了`);
         renderLibrary(app, lib);
