@@ -4,8 +4,8 @@
 
 export const AMBIENCE_LABELS = Object.freeze({
     none: '无', rain: '雨声', storm: '暴雨雷声', wind: '风声', waves: '海浪', night: '夜晚虫鸣',
-    room: '安静室内', fire: '篝火噼啪', crowd: '人声嘈杂', cafe: '咖啡馆',
-    drizzle: '细雨', roofrain: '屋檐雨声', snow: '雪夜寒风', blizzard: '暴风雪', forest: '森林鸟鸣', birds: '清晨鸟鸣', river: '溪流', waterfall: '瀑布', lake: '湖畔微风', harbor: '港口', train: '火车车厢', subway: '地铁车厢', traffic: '城市车流', street: '城市街道', classroom: '教室', library: '图书馆', hospital: '医院走廊', office: '办公室', restaurant: '餐厅', market: '热闹集市', festival: '节日人群', applause: '剧场掌声', clock: '钟表滴答', fan: '风扇', aircon: '空调', computer: '电脑机房', space: '科幻舱室', cave: '洞穴回声', footsteps: '走廊脚步', keyboard: '键盘敲击', seaside: '海边海鸥', thunder: '远处雷声', fireworks: '烟花'
+    fire: '篝火噼啪', crowd: '人声嘈杂', cafe: '咖啡馆',
+    drizzle: '细雨', roofrain: '屋檐雨声', blizzard: '暴风雪', forest: '森林鸟鸣', birds: '清晨鸟鸣', river: '溪流', waterfall: '瀑布', harbor: '港口', train: '火车车厢', subway: '地铁车厢', traffic: '城市车流', street: '城市街道', classroom: '教室', hospital: '医院走廊', office: '办公室', restaurant: '餐厅', market: '热闹集市', festival: '节日人群', applause: '剧场掌声', clock: '钟表滴答', cave: '洞穴回声', footsteps: '走廊脚步', keyboard: '键盘敲击', seaside: '海边海鸥', thunder: '远处雷声', fireworks: '烟花'
 });
 
 let CTX = null;
@@ -341,22 +341,50 @@ function rumble(out, { peak = 1.2, at = 0 } = {}) {
     burst(out, { type: 'brown', hp: 20, lp: 260, peak, attack: rnd(0.15, 0.5), decay: rnd(2.5, 4.5), at });
     if (Math.random() < 0.5) burst(out, { type: 'brown', hp: 30, lp: 200, peak: peak * 0.6, attack: 0.3, decay: 2.5, at: (at || ctx().currentTime) + rnd(0.6, 1.4) });
 }
-// 车开过去：由远到近再远，带一点胎噪
-function passby(out, { peak = 0.35, dur = 3.5 } = {}) {
+// 车辆从远处驶近再离开：宽频胎噪、低沉引擎和不对称的远近变化，避免「电子扫频」效果。
+function passby(out, { peak = 0.22, dur = 4 } = {}) {
     const c = ctx(), t = c.currentTime;
-    const s = c.createBufferSource();
-    s.buffer = noise('pink');
-    const f = filter('bandpass', 350, 0.8);
-    const g = gain(0);
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(peak, t + dur * 0.5);
-    g.gain.linearRampToValueAtTime(0, t + dur);
-    f.frequency.setValueAtTime(260, t);
-    f.frequency.linearRampToValueAtTime(700, t + dur * 0.5);
-    f.frequency.linearRampToValueAtTime(240, t + dur);
-    chain(s, f, g, out);
-    s.start(t, Math.random() * 3);
-    s.stop(t + dur + 0.1);
+    const road = c.createBufferSource(); road.buffer = noise('pink');
+    const tire = filter('bandpass', 750, .45), g = gain(0);
+    tire.frequency.setValueAtTime(370, t);
+    tire.frequency.linearRampToValueAtTime(900, t + dur * .4);
+    tire.frequency.exponentialRampToValueAtTime(280, t + dur);
+    g.gain.setValueAtTime(.0001, t);
+    g.gain.linearRampToValueAtTime(peak * .3, t + dur * .25);
+    g.gain.linearRampToValueAtTime(peak, t + dur * .43);
+    g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    chain(road, tire, g, out);
+    road.start(t, Math.random() * 2.5); road.stop(t + dur + .02);
+    const engine = c.createBufferSource(); engine.buffer = noise('brown');
+    const low = filter('lowpass', 190), eg = gain(0);
+    eg.gain.setValueAtTime(0, t);
+    eg.gain.linearRampToValueAtTime(peak * .65, t + dur * .48);
+    eg.gain.linearRampToValueAtTime(0, t + dur);
+    chain(engine, low, eg, out);
+    engine.start(t, Math.random() * 2.5); engine.stop(t + dur + .02);
+}
+// 低调的真实场景底层：不重复复制同一段人声，更不会产生合成「喊叫」。
+function distantVoices(out, { level = .12, cutoff = 1100, people = 6 } = {}) {
+    chain(loopBuf(babble(people)), filter('highpass', 160), filter('lowpass', cutoff), gain(level), out);
+}
+// 各场景的小物件音：泛音和阻尼都有变化，避免纯正弦波的电子提示音。
+function clink(out, peak = .035, at = 0) {
+    const f = rnd(1700, 3100), t = at || ctx().currentTime;
+    burst(out, { bp: f, q: rnd(2, 5), peak, attack: .001, decay: rnd(.035,.09), at:t });
+    burst(out, { bp: f * rnd(1.5, 1.95), q: 4, peak: peak * .27, attack: .001, decay: .065, at:t+.008 });
+}
+function chair(out) {
+    const t = ctx().currentTime;
+    burst(out,{type:'brown',hp:90,lp:900,peak:.17,attack:.045,decay:.20,at:t});
+    if(Math.random()<.5) burst(out,{bp:rnd(500,950),q:.7,peak:.035,attack:.07,decay:.25,at:t+.08});
+}
+// 烟花响声采用宽频瞬态和错落的远处回响；不再使用模仿人声的音调。
+function fireworkPop(out, t, size = 1) {
+    burst(out,{type:'pink',hp:130,lp:5000,peak:.58*size,attack:.003,decay:.13,at:t});
+    burst(out,{type:'brown',hp:35,lp:400,peak:1.0*size,attack:.012,decay:.7,at:t+.02});
+    burst(out,{type:'brown',hp:35,lp:300,peak:.23*size,attack:.09,decay:.65,at:t+rnd(.27,.43)});
+    const n = Math.floor(rnd(8,20));
+    for(let i=0;i<n;i++) burst(out,{hp:rnd(1900,3700),lp:8500,peak:rnd(.012,.047)*size,attack:.001,decay:rnd(.012,.06),at:t+rnd(.17,1.6)});
 }
 
 const BUILD = {
@@ -439,10 +467,11 @@ const BUILD = {
     },
     library(out, add) { chain(src('brown'), filter('lowpass', 220), gain(.14), out); add(5000, 12000, () => burst(out, { bp: rnd(2500, 4000), q: .8, peak: .03, attack: .02, decay: .12 })); }, // 很安静，偶尔翻书
     classroom(out, add) {
-        chain(src('brown'), filter('lowpass', 260), gain(0.25), out);
-        chain(loopBuf(babble(4)), filter('lowpass', 2600), gain(0.2), out); // 小声说话
-        add(3000, 7000, () => burst(out, { type: 'pink', bp: rnd(500, 900), q: 3, peak: .05, attack: .05, decay: .25 })); // 挪椅子
-        add(2000, 5000, () => burst(out, { hp: 2000, lp: 6000, peak: .03, decay: .02 }));
+        // 课间教室：远处交谈、翻动纸张、椅脚摩擦和偶尔桌面轻敲。
+        distantVoices(out, { level: .12, cutoff: 1100, people: 4 });
+        add(4500, 11000, () => chair(out));
+        add(2200, 5400, () => burst(out, { hp: 700, lp: 5000, peak: .055, attack: .015, decay: .075 }));
+        add(6000, 12500, () => { let t = ctx().currentTime; for(let i=0;i<3;i++) { burst(out,{bp:rnd(900,1900),q:.85,peak:.025,attack:.003,decay:.018,at:t}); t+=rnd(.11,.24); } });
     },
     office(out, add) {
         chain(src('brown'), filter('lowpass', 260), gain(0.25), out);
@@ -507,26 +536,33 @@ const BUILD = {
         add(9000, 20000, () => burst(out, { type: 'pink', bp: 1500, q: 2, peak: .05, attack: .3, decay: 1.2 })); // 咖啡机蒸汽
     },
     restaurant(out, add) {
-        crowdOf(out, 1, { lp: 3000, level: 0.45 });
-        chain(src('brown'), filter('lowpass', 300), gain(0.1), out);
-        add(900, 3000, () => { const f = rnd(3000, 5200); burst(out, { tone: f, peak: .035, attack: .001, decay: .2 }); burst(out, { tone: f * 1.33, peak: .02, attack: .001, decay: .15 }); }); // 刀叉碰盘子
+        // 温和的人声作背景，以餐具、杯盘与桌椅声区别于咖啡馆。
+        distantVoices(out, { level: .13, cutoff: 1350, people: 6 });
+        add(1300, 3700, () => { clink(out, rnd(.025,.05)); if(Math.random()<.32) clink(out,.02,ctx().currentTime+rnd(.08,.18)); });
+        add(5000, 13000, () => chair(out));
+        add(3700, 7500, () => burst(out,{hp:750,lp:3400,peak:.038,attack:.015,decay:.12}));
     },
     market(out, add) {
-        crowdOf(out, 2, { lp: 3400, level: 0.75 });
-        chain(src('pink'), filter('lowpass', 1200), gain(0.06), out);
-        add(3000, 8000, () => burst(out, { tone: 1450, peak: .05, attack: .002, decay: .4 })); // 小铃铛
-        add(4000, 10000, () => { const t = ctx().currentTime; for (let i = 0; i < 3; i++) burst(out, { type: 'pink', bp: rnd(500, 900), q: 4, peak: .14, attack: .04, decay: .2, at: t + i * .28 }); }); // 吆喝
+        // 集市：远近不一的人声、脚步和摊位物件，去掉伪人声「吆喝」和电子铃。
+        distantVoices(out, { level: .22, cutoff: 1500, people: 8 });
+        chain(src('pink'), filter('bandpass', 650, .35), gain(.035), out);
+        add(1600, 4500, () => {const t=ctx().currentTime; for(let i=0;i<2+Math.floor(Math.random()*3);i++) step(out,t+i*rnd(.39,.55),{peak:rnd(.06,.13),hard:.35});});
+        add(3800, 8500, () => { clink(out,.04); burst(out,{type:'brown',hp:100,lp:1100,peak:.09,attack:.02,decay:.17,at:ctx().currentTime+.2});});
+        add(3500, 7700, () => burst(out,{hp:400,lp:2400,peak:.055,attack:.1,decay:.18}));
     },
     street(out, add) {
-        chain(src('brown'), filter('lowpass', 500), gain(.3), out);
-        chain(loopBuf(babble(6)), filter('lowpass', 2600), gain(0.18), out);
-        add(2500, 6000, () => passby(out, { peak: .3, dur: rnd(2.5, 4.5) }));
-        add(15000, 40000, () => { const t = ctx().currentTime; [0, .22].forEach(d => burst(out, { tone: 420, wave: 'square', peak: .025, attack: .01, decay: .15, at: t + d })); }); // 远处喇叭
+        distantVoices(out, { level: .075, cutoff: 980, people: 6 });
+        chain(src('brown'), filter('lowpass', 220), gain(.09), out);
+        add(3000, 7600, () => passby(out, { peak: rnd(.14,.22), dur: rnd(3.2, 5.2) }));
+        add(16000, 35000, () => burst(out, { bp: rnd(420,570), q:.6, peak:.035, attack:.055, decay:.17 }));
     },
     traffic(out, add) {
-        chain(src('brown'), filter('lowpass', 500), gain(.4), out);
-        add(1500, 4000, () => passby(out, { peak: .4, dur: rnd(2.5, 5) }));
-        add(20000, 45000, () => burst(out, { tone: 380, wave: 'square', peak: .025, attack: .01, decay: .35 }));
+        // 稳定的远处车阵 + 不同距离的车辆驶过，杜绝单纯「沙沙」的假车流。
+        chain(src('brown'), filter('lowpass', 170), gain(.20), out);
+        const distant = gain(.075); chain(src('pink'),filter('bandpass',440,.45),distant,out);
+        lfo(distant.gain,.065,.025);
+        add(1600, 4400, () => passby(out, { peak: rnd(.16,.3), dur: rnd(2.9, 5.7) }));
+        add(11000, 26000, () => burst(out,{bp:rnd(350,560),q:.8,peak:.035,attack:.035,decay:.27}));
     },
     train(out) {
         chain(src('brown'), filter('lowpass', 420), gain(.45), out);
@@ -550,51 +586,31 @@ const BUILD = {
         chain(src('pink'), filter('lowpass', 1200), gain(0.05), out);
     },
     festival(out, add) {
-        // 人很多、很热闹：大片人声 + 欢呼 + 零星掌声和笑声
-        crowdOf(out, 3, { lp: 3600, level: 0.85 });
-        const cl = gain(0.1); chain(loopBuf(clapping(10)), filter('highpass', 400), cl, out); lfo(cl.gain, 0.05, 0.08);
-        add(3500, 9000, () => {
-            // 欢呼：一群人一起「哦——」往上扬
-            const c = ctx(), t = c.currentTime;
-            for (let i = 0; i < 6; i++) {
-                const f = rnd(220, 420);
-                call(out, { points: [[0, f], [rnd(.4, .7), f * rnd(1.3, 1.7)], [rnd(.9, 1.3), f * 1.2]], peak: .02, wave: 'sawtooth', bp: rnd(700, 1200), at: t + rnd(0, .25) });
-            }
-        });
-        add(6000, 15000, () => { const t = ctx().currentTime; for (let i = 0; i < 6; i++) burst(out, { hp: 1500, lp: 6000, peak: .12, attack: .001, decay: .03, at: t + i * rnd(.05, .12) }); }); // 远处小鞭炮
+        // 热闹来自层次与动态，而不是六个电子嗓子齐喊。
+        distantVoices(out,{level:.25,cutoff:1650,people:8});
+        const cheering = gain(.055);
+        chain(loopBuf(clapping(10)), filter('highpass',650), filter('lowpass',3000),cheering,out);
+        lfo(cheering.gain,.08,.035);
+        add(3200, 7600, () => { const t=ctx().currentTime; for(let i=0;i<3+Math.floor(Math.random()*5);i++) burst(out,{hp:900,lp:3800,peak:rnd(.024,.05),attack:.003,decay:.052,at:t+rnd(0,.6)}); });
+        add(5800, 12500, () => { clink(out,.04); });
     },
     fireworks(out, add) {
-        // 夜空里放烟花：咻——（上升的哨音）→ 砰（低沉的炸响 + 回声）→ 噼里啪啦（碎火花），底下有人群
-        crowdOf(out, 1, { lp: 2400, level: 0.22 });
-        const sky = echo(out, { time: 0.32, fb: 0.35, mix: 0.45, lp: 1500 });
-        add(2500, 7000, () => {
-            const c = ctx(), t = c.currentTime;
-            const rise = Math.random() < 0.65 ? rnd(1.0, 1.6) : 0;
-            if (rise) {
-                const o = c.createOscillator(); o.type = 'sine';
-                const f0 = rnd(700, 1000);
-                o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f0 * rnd(2.2, 3), t + rise);
-                const g = gain(0); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(.05, t + .15); g.gain.linearRampToValueAtTime(.015, t + rise);
-                chain(o, g, out); o.start(t); o.stop(t + rise + .05);
-                burst(out, { hp: 2500, lp: 7000, peak: .012, attack: rise * .8, decay: .1, at: t });
-            }
-            const bang = t + (rise || 0.05);
-            const big = rnd(0.7, 1.2);
-            burst(sky, { type: 'brown', hp: 25, lp: rnd(220, 380), peak: 1.6 * big, attack: .004, decay: rnd(1.2, 2), at: bang });
-            burst(sky, { bp: rnd(500, 900), q: .8, peak: .5 * big, attack: .002, decay: .18, at: bang });
-            if (Math.random() < .75) {
-                const n = 25 + Math.floor(Math.random() * 45), span = rnd(.8, 2);
-                for (let i = 0; i < n; i++) burst(out, { hp: 2500, lp: 9000, peak: rnd(.03, .12), attack: .0008, decay: rnd(.004, .015), at: bang + .2 + Math.pow(Math.random(), .7) * span });
-            }
+        // 真实听感以低沉爆响、散落火花及间隔为主；刻意移除啸叫音和假人声。
+        distantVoices(out,{level:.065,cutoff:850,people:6});
+        add(3400, 8500, () => {
+            const t=ctx().currentTime + rnd(.25,.7);
+            fireworkPop(out,t,rnd(.65,1));
+            if(Math.random()<.28) fireworkPop(out,t+rnd(.6,1.3),rnd(.35,.65));
         });
     }
+
 };
 // 正在搭建的这一层里节奏声音的定时器，停的时候一起清掉
 let RHY = null;
 
 // 每种环境声的响度校准（dB）：实际录下来量过，让切换场景时音量差不多；
 // 本来就安静的（夜晚、图书馆、细雨…）稍轻，本来就吵的（暴雨、瀑布、人群…）稍响
-const TRIM = { aircon: 3.1, applause: -0.9, birds: 8.9, blizzard: -2.0, cafe: -0.9, cave: 0.9, classroom: 1.5, clock: 8, computer: 2.9, crowd: -4.9, drizzle: 6.7, fan: 2.6, festival: -3.6, fire: -1.3, fireworks: 1.0, footsteps: 6.5, forest: 8.5, harbor: -4.5, hospital: 5.4, keyboard: 6.4, lake: 2.5, library: 4.5, market: -2.0, night: 9.3, office: 4.1, rain: 2.0, restaurant: -0.7, river: 5.3, roofrain: 2.0, room: 1.0, seaside: -4.8, snow: -0.2, space: 1.8, storm: -4.2, street: 0.8, subway: -0.6, thunder: -0.9, traffic: 0.2, train: -2.1, waterfall: -1.7, waves: -4.5, wind: 2.4 };
+const TRIM = { aircon: 3.1, applause: -0.9, birds: 8.9, blizzard: -2.0, cafe: -0.9, cave: 0.9, classroom: 2.0, clock: 8, computer: 2.9, crowd: -4.9, drizzle: 6.7, fan: 2.6, festival: 0.5, fire: -1.3, fireworks: -1.8, footsteps: 6.5, forest: 8.5, harbor: -4.5, hospital: 5.4, keyboard: 6.4, lake: 2.5, library: 4.5, market: 1.0, night: 9.3, office: 4.1, rain: 2.0, restaurant: 3.5, river: 5.3, roofrain: 2.0, room: 1.0, seaside: -4.8, snow: -0.2, space: 1.8, storm: -4.2, street: 1.0, subway: -0.6, thunder: -0.9, traffic: 0.5, train: -2.1, waterfall: -1.7, waves: -4.5, wind: 2.4 };
 
 /**
  * 开始一层环境声。返回 { stop() }，stop 会淡出。

@@ -2898,7 +2898,7 @@ export class StoryVoiceApp {
                             </div>
                             <input type="hidden" data-k="analysisMode" value="${esc(s.analysisMode)}">
                         </div>
-                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写正文时顺手标上看不见的标记——每句台词前的 [[名字|语气]]，每楼开头的情节 [[基调:xx]]<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，每楼开头和换场景的地方的环境 [[环境:xx]]（xx 是雨声、森林、教室等 42 种之一，none = 安静没有环境声）</span>。边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，环境声也能在 🎭 里改</span>。</div>
+                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写正文时顺手标上看不见的标记——每句台词前的 [[名字|语气]]，每楼开头的情节 [[基调:xx]]<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，每楼开头和换场景的地方的环境 [[环境:xx]]（xx 是雨声、森林、教室等多种之一，none = 安静没有环境声）</span>。边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，环境声也能在 🎭 里改</span>。</div>
                         <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用这个人用的语音渠道重新生成这一句（Fish、MiniMax、OpenAI、豆包……会自动换成各自认的写法）。</div>
 
                         <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
@@ -2923,7 +2923,7 @@ export class StoryVoiceApp {
 
                     <div class="yzsv-sec">环境声 · 拟声词</div>
                     <div class="yzsv-card pad">
-                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层环境声（雨、雪、森林、海边、街道、教室、咖啡馆、烟花等 42 种，WebAudio 实时合成）。简单分析由正文模型标 [[环境:xx]]，深度分析由分析模型判断，手动在 🎭 里给这一楼选；关掉后简单分析也不会再让模型标环境', 'padding:0 0 10px;')}
+                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层环境声（雨、雪、森林、海边、街道、教室、咖啡馆、烟花等多种，WebAudio 实时合成）。简单分析由正文模型标 [[环境:xx]]，深度分析由分析模型判断，手动在 🎭 里给这一楼选；关掉后简单分析也不会再让模型标环境', 'padding:0 0 10px;')}
                         <div class="yzsv-field"><label>环境声音量 <span class="yzsv-ambv">${esc(s.ambienceVol)}</span>%</label><input type="range" min="5" max="80" step="5" class="yzsv-range" data-k="ambienceVol" value="${esc(s.ambienceVol)}"></div>
                         ${sw('autoOno', '自动加拟声词', '简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加', 'padding:0 0 10px;')}
                     </div>
