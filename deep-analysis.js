@@ -1,4 +1,5 @@
 import { AMBIENCE_LABELS } from './ambience.js';
+import { ENGINE_RULE } from './tts-adapt.js';
 // 原有手机插件 · 正文朗读「深度分析」
 // 正文写完（</content> 闭合）后，把整楼正文交给模型做一次配音导演：
 // 逐句判断说话人、整楼基调、每句台词的张力（1~5）、语速，并在台词里插入声音标签、哽咽叠字等，
@@ -65,18 +66,20 @@ export const DEEP_PROMPT = [
     '12. 只输出 JSON，不要在 JSON 外面写任何东西，也不要输出思考过程。'
 ].join('\n');
 
-export function buildDeepMessages({ story = '', lines = [], roster = [], userName = '', previous = '', speakers = {} } = {}) {
+// engines：{ 名字: 'inline' | 's1' | 'mm28' | 'mm' | 'sentence' | 'plain', '*': 其他人 }；全是 inline 时不用传
+export function buildDeepMessages({ story = '', lines = [], roster = [], userName = '', previous = '', speakers = {}, engines = null } = {}) {
     const input = {
         task: 'acoustic_annotation_for_audiobook',
         ...(userName ? { user: userName } : {}),
         roster: [...new Set(roster.filter(Boolean))],
         ...(previous ? { previous } : {}),
         ...(Object.keys(speakers).length ? { speakers } : {}),
+        ...(engines ? { engines } : {}),
         story,
         lines: lines.map(l => ({ id: l.id, text: l.text }))
     };
     return [
-        { role: 'system', content: `${DEEP_PROMPT}\n13. ${RULE_INTIMATE_AUTO}` },
+        { role: 'system', content: `${DEEP_PROMPT}\n13. ${RULE_INTIMATE_AUTO}${engines ? `\n${ENGINE_RULE}` : ''}` },
         { role: 'user', content: JSON.stringify(input) }
     ];
 }

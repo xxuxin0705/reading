@@ -104,6 +104,7 @@ export function instructionZh(tags, t) {
  * @returns {{ text: string, opts: object }}
  */
 export function adaptScript({ provider = '', model = '', script = '', t = 0 } = {}) {
+    if (provider === 'custom_openai') provider = 'openai'; // 第三方 OpenAI 兼容：按 OpenAI 的写法
     const { lead, all } = splitTags(script);
     const tags = [...new Set(all)];
     if (String(provider).startsWith('minimax')) {
@@ -142,3 +143,60 @@ export function adaptScript({ provider = '', model = '', script = '', t = 0 } = 
     }
     return { text: stripAll(script), opts: {} };
 }
+
+// ---------- 每个渠道能认什么（编辑面板、深度分析按说话人的渠道来）----------
+// kind：
+//   inline   标签插在哪个字前面就从哪里生效，句中可以换情绪（Fish S2 / S2.1、MiMo）
+//   s1       同上，但只认固定的英文词，会换成最接近的（Fish S1）
+//   mm28     整句一个情绪参数 + 句中少数几种声音标签（MiniMax speech-2.8）
+//   mm       整句一个情绪参数，句中不认标签（MiniMax 其他模型）
+//   sentence 所有标签合成一句整句的语气说明，位置不影响（OpenAI gpt-4o-mini-tts / 豆包 2.0 / IndexTTS）
+//   plain    不认标签，只有叠字、语气词、拟声字、标点有用（Fish Drama、tts-1、豆包 1.0 等）
+export const MM_EMOTION_TAGS = Object.freeze([['开心', 'happy'], ['悲伤', 'sad'], ['生气', 'angry'], ['害怕', 'scared'], ['厌恶', 'disdainful'], ['惊讶', 'surprised'], ['平静', 'calm']]);
+export const MM28_SOUND_TAGS = Object.freeze(Object.keys(MM_SOUND));
+export const SOUND_TAGS = Object.freeze(Object.keys(SOUND_TEXT));
+const CH_NAME = { fish: 'Fish Audio', minimax_cn: 'MiniMax 国内', minimax_intl: 'MiniMax 国际', openai: 'OpenAI', custom_openai: '第三方 OpenAI 兼容', volcengine: '豆包', indextts: 'IndexTTS', nimo: 'MiMo' };
+
+export function channelProfile(provider = '', model = '', { volcV2 = true } = {}) {
+    const m = String(model || '');
+    const name = `${CH_NAME[provider] || provider || '默认渠道'}${m ? ` · ${m}` : ''}`;
+    const P = (kind, note) => ({ kind, name, provider, model: m, note });
+    const p = provider === 'custom_openai' ? 'openai' : provider;
+    if (p === 'fish') {
+        if (/drama/i.test(m)) return P('plain', '这个模型不认 [标签]：标签会被去掉（笑、哭、叹气换成拟声字），只有叠字、语气词、拟声字、标点有用。');
+        if (/^s1\b|speech-1/i.test(m)) return P('s1', '只认固定的英文情绪词：标签会换成最接近的那个，可以插在句中。');
+        return P('inline', '标签放在哪个字前面就从哪里生效，句中可以换情绪，也可以自己写英文描述。');
+    }
+    if (p.startsWith('minimax')) {
+        if (/2\.8/.test(m)) return P('mm28', '情绪整句只有一个（取句首第一个：开心 / 悲伤 / 生气 / 害怕 / 厌恶 / 惊讶 / 平静）；句中只能插笑、叹气、倒抽气、喘、吸鼻子、清嗓、低哼和停顿，其他声音标签会换成拟声字。');
+        return P('mm', '只认整句一个情绪（取句首第一个）和停顿；句中的声音标签会换成拟声字（哈哈、唉……）。');
+    }
+    if (p === 'openai') {
+        if (/gpt-4o|mini-tts/i.test(m) || !m) return P('sentence', '所有标签合成一句英文语气说明，整句生效，放在哪里都一样；句中的笑、哭、叹气会换成拟声字。建议句首放 1~2 个。');
+        return P('plain', '这个模型（tts-1 类）不认语气：标签会被去掉（笑、哭、叹气换成拟声字），只有叠字、语气词、拟声字、标点有用。');
+    }
+    if (p === 'volcengine') {
+        if (volcV2) return P('sentence', '标签合成一句中文语气指令，整句生效，放在哪里都一样；句中的笑、哭、叹气会换成拟声字。建议句首放 1~2 个。');
+        return P('plain', '豆包 1.0 音色不认语气指令：标签会被去掉（笑、哭、叹气换成拟声字），只有叠字、语气词、拟声字、标点有用。');
+    }
+    if (p === 'indextts') return P('sentence', '标签合成一句中文情绪描述，整句生效，放在哪里都一样；句中的笑、哭、叹气会换成拟声字。建议句首放 1~2 个。');
+    if (p === 'nimo') return P('inline', '句首标签是整句风格，句中标签是音效。');
+    return P('plain', '这个渠道不认标签：只有叠字、语气词、拟声字、标点有用。');
+}
+
+// 一组标签（一键演法用）→ 这个渠道真正会用到的
+export function fitTags(tags = [], prof = {}) {
+    const k = prof.kind;
+    if (k === 'plain') return [];
+    if (k === 'mm' || k === 'mm28') {
+        const emoKey = tags.join(' ');
+        const emo = (MM_EMO.find(([re]) => re.test(emoKey)) || [])[1];
+        const canon = { happy: 'happy', sad: 'sad', angry: 'angry', fearful: 'scared', disgusted: 'disdainful', surprised: 'surprised', calm: 'calm' }[emo];
+        const sounds = k === 'mm28' ? tags.filter(x => MM_SOUND[x]) : [];
+        return [...new Set([canon, ...sounds].filter(Boolean))].slice(0, 2);
+    }
+    return tags.slice(0, 2);
+}
+
+// 给深度分析模型的一句话：这个人用的引擎该怎么写
+export const ENGINE_RULE = '14. engines 写了每个说话人用的语音引擎（"*" 是其他所有人）。不同引擎能认的写法不同，content 要按这句说话人的引擎写：inline（Fish S2）——照上面的规则，标签插在生效的字前面，句中可以转情绪；s1（Fish S1）——同 inline，只用列表里的词；mm28（MiniMax 2.8）——整句只有一个情绪生效：只在句首写一个情绪标签，句中只可插 laughing、chuckling、sigh、gasp、panting、sniffling、clear throat、groan、pause，其他声音用拟声字、叠字、标点表达；mm（MiniMax 其他）——只在句首写一个情绪标签，句中不写标签，声音全靠拟声字、叠字、标点；sentence（OpenAI / 豆包 / IndexTTS）——标签会合成一句整句语气说明：只在句首写最多两个（一个情绪 + 一个声音），句中不写，句中的情绪变化用叠字、……、拟声字体现；plain（不认标签）——一个标签都不写，只用叠字、语气字、拟声字、……、！！表达。tension_level 和 pace 对所有引擎都有效，照常写。';

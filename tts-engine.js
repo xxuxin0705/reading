@@ -140,14 +140,19 @@ export class TtsEngine {
     async _openai(input, c, o) {
         let url = c.apiUrl.replace(/\/+$/, '');
         if (!/\/audio\/speech$/i.test(url)) url = `${url.replace(/\/(?:v\d+)?$/i, '')}/v1/audio/speech`;
-        const res = await this._fetch(url, {
+        // IndexTTS2：情绪描述用 emo_text 传（服务端不认这两个字段就去掉重试一次）
+        const emo = c.provider === 'indextts' && o.emoText && !this._idxNoEmo ? { emo_text: String(o.emoText).slice(0, 200), use_emo_text: true } : null;
+        const send = (withEmo) => this._fetch(url, {
             method: 'POST', signal: o.signal,
             headers: { 'Content-Type': 'application/json', ...(c.apiKey ? { Authorization: `Bearer ${c.apiKey}` } : {}) },
             body: JSON.stringify({
                 model: c.model, input, voice: c.voice || 'alloy', response_format: 'mp3',
-                ...(o.instructions && /gpt-4o|mini-tts/i.test(c.model) ? { instructions: String(o.instructions).slice(0, 600) } : {})
+                ...(o.instructions && /gpt-4o|mini-tts/i.test(c.model) ? { instructions: String(o.instructions).slice(0, 600) } : {}),
+                ...(withEmo && emo ? emo : {})
             })
         });
+        let res = await send(true);
+        if (emo && (res.status === 400 || res.status === 422)) { this._idxNoEmo = true; res = await send(false); }
         if (!res.ok) throw new Error(`语音接口 HTTP ${res.status}：${String(await this._errorText(res)).slice(0, 200)}`);
         return URL.createObjectURL(await res.blob());
     }

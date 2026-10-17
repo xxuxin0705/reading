@@ -3,7 +3,7 @@
 
 import { favStore, needsTranslation } from './fav-store.js';
 import { startAmbience, AMBIENCE_LABELS } from './ambience.js';
-import { adaptScript } from './tts-adapt.js';
+import { adaptScript, channelProfile } from './tts-adapt.js';
 import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
@@ -24,6 +24,7 @@ const DEFAULTS = Object.freeze({
       // only = 只读配了音色的人；npc = 没配音色的用默认 NPC 音色
     npcMale: '',
     npcFemale: '',
+    npcProvider: '',      // NPC 默认音色属于哪个渠道（每人用自己的渠道时）：'' = 跟随默认渠道
     speakers: [],
     readUser: false,
     markSpeaker: true,
@@ -291,7 +292,15 @@ export class StoryVoice {
             const roster = [...new Set([...s.speakers.map(x => x.name), ...this._wechatVoiceNames(), String(ctx?.name2 || '').trim(), String(ctx?.name1 || '').trim()].filter(Boolean))];
             const prev = (ctx?.chat || []).slice(Math.max(0, id - 3), id).filter(m => m && !m.is_system)
                 .map(m => ({ n: m.name || '', t: clean(this._rawToText(m.mes || '')).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() })).filter(x => x.t).map(x => `【${x.n}】\n${x.t}`).join('\n\n');
-            const messages = buildDeepMessages({ story, lines: items, roster, userName: String(ctx?.name1 || '').trim(), previous: prev, speakers });
+            // 每个人用的语音引擎不同（每人用自己的渠道时）：告诉模型按引擎能认的写法标
+            let engines = null;
+            try {
+                const map = {};
+                roster.forEach(n => { map[n] = this._speakerChannel(n).profile.kind; });
+                map['*'] = this._speakerChannel('').profile.kind;
+                if (Object.values(map).some(k => k !== 'inline')) engines = map;
+            } catch (e) { engines = null; }
+            const messages = buildDeepMessages({ story, lines: items, roster, userName: String(ctx?.name1 || '').trim(), previous: prev, speakers, engines });
             this._refreshDeepStatus(id);
             const raw = await this._callModel(messages, { timeout: (Number(s.deepTimeout) || 150) * 1000 });
             const parsed = parseDeep(raw, items);
@@ -1433,8 +1442,37 @@ export class StoryVoice {
     // 这一句最后走哪个渠道：统一模式一律用选的渠道；按人模式用这个人自己配的渠道
     _providerFor(vi = {}) {
         const st = this.getSettings();
-        if (st.channelMode === 'unified') return this._storyProvider();
-        return vi.provider || this._storyProvider();
+        const global = st.ttsProvider === 'custom_openai' ? 'custom_openai' : this._storyProvider();
+        if (st.channelMode === 'unified') return global;
+        return vi.provider || global;
+    }
+
+    // 这个说话人最后走哪个渠道、哪个模型、这个渠道认什么写法（编辑面板、深度分析用）
+    _speakerChannel(speaker = '') {
+        const vi = this._voiceForSync(speaker);
+        const provider = this._providerFor(vi);
+        const model = this._modelOf(provider);
+        let volcV2 = true;
+        if (provider === 'volcengine') {
+            const rid = String(this.tts?._get?.('volcengine', 'resource-id') || 'seed-tts-2.0');
+            volcV2 = /2\.0|tts-2|icl-2/i.test(rid);
+        }
+        return { vi, provider, model, profile: channelProfile(provider, model, { volcV2 }) };
+    }
+
+    // 编辑面板的实时预览：这句演法最后发给语音接口的文字和参数（和 _synth 的深度分析分支一致）
+    previewLine(speaker = '', script = '', t = 0) {
+        const ch = this._speakerChannel(speaker);
+        const prov = ch.provider;
+        if (prov === 'fish') {
+            const text = this._applyReadings(this._prepScript(script, 'fish'));
+            const base = 0.7;
+            const temp = t && TENSION_TEMPERATURE[t] !== undefined ? Number((base + TENSION_TEMPERATURE[t]).toFixed(2)) : null;
+            return { ...ch, text, opts: temp !== null ? { temperature: temp } : {} };
+        }
+        const raw = this._prepScript(script, prov, { keepTags: true });
+        const a = adaptScript({ provider: prov, model: ch.model, script: this._applyReadings(raw), t: Number(t) || 0 });
+        return { ...ch, text: a.text, opts: a.opts };
     }
 
     // 第三方渠道：完整的 /audio/speech 地址
@@ -1519,22 +1557,28 @@ export class StoryVoice {
             || null;
     }
 
-    // 说话人 → 音色：先看「朗读」App 里登记的，再看微信（联系人 / 我的音色），最后用默认
-    async _voiceFor(speaker = '') {
+    // 说话人 → 音色：先看「朗读」App 里登记的，再看角色库（联系人 / 我的音色），最后用默认 NPC 音色
+    _voiceForSync(speaker = '') {
         const s = this.getSettings();
+        // NPC 默认音色属于哪个渠道：每人用自己的渠道时按 NPC 设置里选的渠道，统一渠道时跟着统一的
+        const npc = (voice) => (s.channelMode !== 'unified' && s.npcProvider) ? { voice, provider: s.npcProvider } : { voice };
         const hit = this._findAppSpeaker(speaker);
         if (hit) return { voice: hit.voice };
         if (String(speaker || '').trim()) {
-            await this._getWechatData();
             const wx = this._findWechatVoice(speaker);
             if (wx) return { ...wx.voiceInfo };
             if (s.npcMode === 'npc') {
                 const g = this._genderFor(speaker);
-                if (g === 'm' && s.npcMale) return { voice: s.npcMale };
-                if (g === 'f' && s.npcFemale) return { voice: s.npcFemale };
+                if (g === 'm' && s.npcMale) return npc(s.npcMale);
+                if (g === 'f' && s.npcFemale) return npc(s.npcFemale);
             }
         }
-        return { voice: s.voice || '' };
+        return npc(s.voice || '');
+    }
+
+    async _voiceFor(speaker = '') {
+        if (String(speaker || '').trim()) await this._getWechatData();
+        return this._voiceForSync(speaker);
     }
 
     // 缓存按「平台+音色+文本」区分：联系人音色改了，点 ▶ 就会自动重新生成
@@ -1542,7 +1586,7 @@ export class StoryVoice {
         if (!this.tts?.requestTTS) throw new Error('小手机的语音模块还没加载');
         let vi = typeof voiceInfo === 'object' && voiceInfo ? voiceInfo : { voice: voiceInfo || '' };
         const provider = this._providerFor(vi);
-        const prov = vi.provider || provider;
+        const prov = provider; // 统一渠道时不能让联系人自己绑的渠道抢走
         let fish = null;
         let extra = null;
         if (vi.deep && prov !== 'fish') {
@@ -1607,7 +1651,7 @@ export class StoryVoice {
         if (vi.languageBoost) opts.languageBoost = vi.languageBoost;
         if (vi.fish) opts.fish = vi.fish;
         // 重新生成：让 Fish 的随机性稍微变一下，避免接口直接给回一模一样的音频
-        if (vi._regen && (vi.provider || this._storyProvider()) === 'fish') {
+        if (vi._regen && opts.provider === 'fish') {
             const base = Number(opts.fish?.temperature) || 0.7;
             opts.fish = { ...(opts.fish || {}), temperature: Number(Math.min(0.95, Math.max(0.3, base + (Math.random() * 0.12 - 0.06))).toFixed(2)) };
         }
@@ -1854,6 +1898,7 @@ export class StoryVoice {
     }
 
     _modelOf(provider = '') {
+        if (provider === 'custom_openai') return this.getSettings().customModel || '';
         if (this.getSettings().ttsProvider === 'custom_openai' && provider === 'openai') return this.getSettings().customModel || '';
         const own = this.getSettings().ttsModels?.[provider];
         if (own) return own;
@@ -1867,17 +1912,14 @@ export class StoryVoice {
         t = t.replace(/[—―]{2,}/g, '…').replace(/(?:…|‥|\.{3,}|・{3,})+/g, '…');
         if (keepTags) return t.trim();
         if (provider !== 'fish') return t.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
-        let model = '';
-        try { model = String(this.tts?._resolveConfig?.({ provider: 'fish' })?.model || ''); } catch (e) { model = ''; }
-        return scriptForModel(t, model).trim();
+        return scriptForModel(t, this._modelOf('fish')).trim();
     }
 
     // 给 Fish 加语气：S2 / S2.1 用 [自由描述]（和台词同一种语言），S1 只认固定的英文情绪 (tag)
     _withCue(text, cue = '', provider = '') {
         const c = String(cue || '').trim();
         if (!c || !this.getSettings().emotionCue || provider !== 'fish') return text;
-        let model = '';
-        try { model = String(this.tts?._resolveConfig?.({ provider: 'fish' })?.model || ''); } catch (e) { model = ''; }
+        const model = this._modelOf('fish');
         if (/drama/i.test(model)) return text;
         if (/^s1\b|speech-1/i.test(model)) {
             const tag = this._cueToS1(c);
@@ -2367,9 +2409,8 @@ export class StoryVoiceApp {
         let libSum = '';
         try {
             const all = this.sv.voiceSource?.active?.() || [];
-            const npc = all.filter(x => !x.isUser && (x.isNpc ?? !!x.gender)).length;
             const me = all.find(x => x.isUser);
-            libSum = `${me ? `我：${me.name}` : '还没设「我」'} · 角色 ${all.length - npc - (me ? 1 : 0)} · NPC ${npc}`;
+            libSum = `${me ? `我：${me.name}` : '还没设「我」'} · 角色 ${all.length - (me ? 1 : 0)} · NPC ${s.npcMode === 'npc' ? '都读' : '不读'}`;
         } catch (e) { libSum = ''; }
         // API 摘要
         const chanLabel = (id) => (TTS_CHANNELS.find(c => c.id === id) || {}).label || id;

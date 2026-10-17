@@ -49,3 +49,4 @@
 .yzr-more summary::before { content: '▸ '; }
 .yzr-more[open] summary::before { content: '▾ '; }
 .yzr-more .yzr-vfield { margin-top: 8px; }
+.yzr-add-main { width: 100%; padding: 12px; font-size: 14px; border-radius: 14px; margin: 2px 0 10px; }
