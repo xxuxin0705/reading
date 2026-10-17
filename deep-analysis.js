@@ -104,7 +104,34 @@ function extractJson(raw = '') {
     if (a < 0 || b <= a) return null;
     const body = t.slice(a, b + 1);
     try { return JSON.parse(body); } catch (e) { /* 再试着修一下 */ }
-    try { return JSON.parse(body.replace(/,\s*([}\]])/g, '$1').replace(/[“”]/g, '"')); } catch (e) { return null; }
+    try { return JSON.parse(body.replace(/,\s*([}\]])/g, '$1').replace(/[“”]/g, '"')); } catch (e) { return salvageJson(t); }
+}
+
+// 回答被截断（输出长度用完、思考太长）：把已经写完整的每一句捡回来，没写完的那几句就按原文读
+export function salvageJson(raw = '') {
+    const t = String(raw || '');
+    const at = t.search(/"(?:voices|lines)"\s*:\s*\[/);
+    if (at < 0) return null;
+    const voices = [];
+    let i = t.indexOf('[', at) + 1;
+    while (i < t.length) {
+        const start = t.indexOf('{', i);
+        if (start < 0) break;
+        let depth = 0, inStr = false, esc = false, end = -1;
+        for (let k = start; k < t.length; k++) {
+            const c = t[k];
+            if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+            if (c === '"') inStr = true;
+            else if (c === '{') depth += 1;
+            else if (c === '}') { depth -= 1; if (depth === 0) { end = k; break; } }
+        }
+        if (end < 0) break; // 最后一个没写完
+        try { voices.push(JSON.parse(t.slice(start, end + 1))); } catch (e) { /* 这一个坏了就跳过 */ }
+        i = end + 1;
+    }
+    if (!voices.length) return null;
+    const pick = (k) => (t.match(new RegExp(`"${k}"\\s*:\\s*"([^"]*)"`)) || [])[1] || '';
+    return { tone: pick('tone'), arc: pick('arc'), ambience: pick('ambience'), voices, _partial: true };
 }
 
 const ALLOWED_EXTRA = new Set([...'呜嗚嗯唔啊哈呼嘿嘻呵噗嘤咳唉哎哼切啧呃哇哦うんあはふっぅぁえへひくぐすげほちウンアハフッゥァエヘヒクグスゲホチ']);
@@ -175,7 +202,7 @@ export function parseDeep(raw, lines) {
     if (!items.size) return null;
     const tone = TONES.includes(String(obj.tone || '').trim()) ? String(obj.tone).trim() : '';
     const amb = String(obj.ambience || '').trim().toLowerCase();
-    return { tone, arc: String(obj.arc || '').trim().slice(0, 60), ambience: AMBIENCES.includes(amb) ? amb : 'none', items };
+    return { tone, arc: String(obj.arc || '').trim().slice(0, 60), ambience: AMBIENCES.includes(amb) ? amb : 'none', items, partial: !!obj._partial };
 }
 
 // 基调收紧标签：紧张、恐怖、战斗这类楼层不用气声和低哼；日常、悲伤不用低哼

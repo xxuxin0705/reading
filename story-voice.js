@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.2.2'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.2.3'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -359,9 +359,24 @@ export class StoryVoice {
             } catch (e) { engines = null; }
             const messages = buildDeepMessages({ story, lines: items, roster, userName: String(ctx?.name1 || '').trim(), previous: prev, speakers, engines });
             this._refreshDeepStatus(id);
-            const raw = await this._callModel(messages, { timeout: (Number(s.deepTimeout) || 150) * 1000 });
-            const parsed = parseDeep(raw, items);
-            if (!parsed) throw new Error('模型没有按格式返回分析结果');
+            // Gemini 2.5 Pro 这类会思考的模型：思考也算在输出长度里，给够长度；回答没法读就再要一次
+            const timeout = (Number(s.deepTimeout) || 150) * 1000;
+            let raw = await this._callModel(messages, { timeout, maxTokens: 16000 });
+            let parsed = parseDeep(raw, items);
+            if (!parsed) {
+                console.warn('[正文朗读] 深度分析第一次的回答没法读，再试一次：', String(raw).slice(0, 2000));
+                const again = [...messages, { role: 'assistant', content: String(raw || '').slice(0, 400) }, { role: 'user', content: '上面的回答不是要求的格式。只输出一个 JSON 对象（以 { 开头、以 } 结尾），不要思考过程、不要解释、不要代码块。' }];
+                raw = await this._callModel(again, { timeout, maxTokens: 16000 });
+                parsed = parseDeep(raw, items);
+            }
+            this._deepLastRaw = String(raw || '');
+            if (!parsed) {
+                const r = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+                console.warn('[正文朗读] 深度分析的回答（没法读）：', raw);
+                throw new Error(!r ? '模型返回是空的（可能被安全过滤拦了，或者思考用光了输出长度）'
+                    : `模型返回的不是要求的格式，开头是：${r.slice(0, 60).replace(/\s+/g, ' ')}…`);
+            }
+            if (parsed.partial) this._toast('深度分析不完整', '模型的回答被截断了，已经用上写完整的那些句子，其余按原文读；可以点「重新分析」再试', 'warning');
             const out = { at: Date.now(), tone: parsed.tone, arc: parsed.arc, ambience: parsed.ambience || 'none', lines: {} };
             // 分析之前就手动改过的句子（没点「重新分析」覆盖）保留用户的
             const before = this._lineEntry(msg);
@@ -500,19 +515,27 @@ export class StoryVoice {
         const base = this._apiBase(s.deepApiUrl);
         if (!base) throw new Error('深度分析选了自定义 API，但还没填地址');
         if (!s.deepModel) throw new Error('深度分析选了自定义 API，但还没选模型');
-        const res = await this._apiFetch(`${base}/chat/completions`, {
+        const send = (mt) => this._apiFetch(`${base}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(s.deepApiKey ? { Authorization: `Bearer ${s.deepApiKey}` } : {}) },
             signal,
-            body: JSON.stringify({ model: s.deepModel, messages, temperature: 0.6, max_tokens: maxTokens, stream: false })
+            body: JSON.stringify({ model: s.deepModel, messages, temperature: 0.6, max_tokens: mt, stream: false })
         });
-        const text = await res.text();
+        let res = await send(maxTokens);
+        let text = await res.text();
+        // 有的服务商不接受这么大的输出长度：降下来再试
+        for (const mt of [8192, 4096]) {
+            if (res.ok || mt >= maxTokens || !(res.status === 400 || res.status === 422) || !/max[_ ]?(?:output[_ ]?)?tokens|maximum|too large|exceed/i.test(text)) break;
+            res = await send(mt);
+            text = await res.text();
+        }
         if (!res.ok) throw new Error(`自定义 API HTTP ${res.status}：${text.slice(0, 160)}`);
         let json = null;
         try { json = JSON.parse(text); } catch (e) { throw new Error('自定义 API 返回的不是 JSON'); }
         const msg = json?.choices?.[0]?.message;
         const out = msg?.content ?? json?.choices?.[0]?.text ?? json?.content?.[0]?.text ?? '';
-        if (!String(out || '').trim()) throw new Error(`自定义 API 没有返回内容${json?.choices?.[0]?.finish_reason ? `（${json.choices[0].finish_reason}）` : ''}`);
+        const fin = json?.choices?.[0]?.finish_reason || '';
+        if (!String(out || '').trim()) throw new Error(`自定义 API 没有返回内容${fin ? `（${fin}${/length|max/i.test(fin) ? '：思考用光了输出长度' : /safety|content_filter|block/i.test(fin) ? '：被安全过滤拦了' : ''}）` : ''}`);
         return Array.isArray(out) ? out.map(x => x?.text || '').join('') : String(out);
     }
 
