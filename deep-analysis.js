@@ -63,7 +63,7 @@ export const DEEP_PROMPT = [
     '10. 光杆单字疑问（嗯？、啊？、え？、ん？）的 ？ 必须保留，不要被别的情绪盖掉。',
     '11. reason：写了 content 或 tension_level 到 3 以上的句子，写一句依据（12 字以内，说清这句背后的心理）。',
     '11.5 环境声：ambience 写这一楼【开头】的环境声，播放时会在台词底下轻轻垫一层。只从已支持的环境声中选：none（无）、rain（雨声）、drizzle（细雨）、roofrain（屋檐雨声）、snow（雪夜寒风）、blizzard（暴风雪）、forest（森林鸟鸣）、birds（清晨鸟鸣）、river（溪流）、waterfall（瀑布）、lake（湖畔微风）、harbor（港口）、train（火车车厢）、subway（地铁车厢）、traffic（城市车流）、street（城市街道）、classroom（教室）、library（图书馆）、hospital（医院走廊）、office（办公室）、restaurant（餐厅）、market（热闹集市）、festival（节日人群）、applause（剧场掌声）、clock（钟表滴答）、fan（风扇）、aircon（空调）、computer（电脑机房）、space（科幻舱室）、cave（洞穴回声）、footsteps（走廊脚步）、keyboard（键盘敲击）、seaside（海边海鸥）、thunder（远处雷声）。场景中途发生变化时，在变化后的第一句台词里写 ambience；没变的句子不写。只依据正文旁白写到的场景，不要凭空加。另外，台词里有正文写到的一下子的声音，可以在那句的 content 里加音效标签（每楼至多两三处）：[crowd laughing]（周围人哄笑）、[background laughter]（背景里的笑声）、[audience laughing]（观众笑）、[applause]（掌声）、[crowd noise]（周围一阵嘈杂）。',
-    '12. 只输出 JSON，不要在 JSON 外面写任何东西，也不要输出思考过程。'
+    '12. 只输出 JSON，不要在 JSON 外面写任何东西，也不要输出思考过程。键名必须和上面的例子一模一样（顶层是 tone、arc、ambience、voices；每句是 id、role、pace、tension_level、reason、content、ambience），不许改名、不许换成 annotations / lines / label 之类，不许外面再包一层。'
 ].join('\n');
 
 // engines：{ 名字: 'inline' | 's1' | 'mm28' | 'mm' | 'sentence' | 'plain', '*': 其他人 }；全是 inline 时不用传
@@ -99,6 +99,9 @@ function extractJson(raw = '') {
     let t = String(raw || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
     const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
     if (fence) t = fence[1];
+    // 整个回答就是一个数组 [ {...}, {...} ]
+    const sq = t.indexOf('['), cu = t.indexOf('{');
+    if (sq >= 0 && (cu < 0 || sq < cu)) { const e = t.lastIndexOf(']'); if (e > sq) { try { return JSON.parse(t.slice(sq, e + 1)); } catch (err) { /* 往下按对象试 */ } } }
     const a = t.indexOf('{');
     const b = t.lastIndexOf('}');
     if (a < 0 || b <= a) return null;
@@ -110,7 +113,7 @@ function extractJson(raw = '') {
 // 回答被截断（输出长度用完、思考太长）：把已经写完整的每一句捡回来，没写完的那几句就按原文读
 export function salvageJson(raw = '') {
     const t = String(raw || '');
-    const at = t.search(/"(?:voices|lines)"\s*:\s*\[/);
+    const at = t.search(/"[A-Za-z_]+"\s*:\s*\[\s*\{/);
     if (at < 0) return null;
     const voices = [];
     let i = t.indexOf('[', at) + 1;
@@ -171,10 +174,41 @@ function normPace(v) {
 }
 
 // 解析模型的回答 → { tone, arc, items: Map(id → {role, pace, tension, script, reason}) }
+// 模型有时把键改了名（Gemini 常写成 annotations / label 之类）：找出真正的那一组，字段按常见的叫法认
+const isItemList = (a) => Array.isArray(a) && a.length && a.every(x => x && typeof x === 'object') && a.some(x => ['id', 'line_id', 'lineId', 'index', 'no', 'num'].some(k => k in x));
+function findItems(obj, depth = 0) {
+    if (isItemList(obj)) return obj;
+    if (!obj || typeof obj !== 'object' || depth > 2) return null;
+    for (const k of ['voices', 'lines', 'annotations', 'items', 'results', 'sentences', 'dialogues', 'dialogue', 'data']) if (isItemList(obj[k])) return obj[k];
+    for (const v of Object.values(obj)) { if (isItemList(v)) return v; }
+    for (const v of Object.values(obj)) { const hit = v && typeof v === 'object' ? findItems(v, depth + 1) : null; if (hit) return hit; }
+    return null;
+}
+const first = (o, keys) => { for (const k of keys) if (o?.[k] !== undefined && o[k] !== null && o[k] !== '') return o[k]; return undefined; };
+function topField(obj, keys, depth = 0) {
+    const v = first(obj, keys);
+    if (v !== undefined || !obj || typeof obj !== 'object' || depth > 1) return v;
+    for (const x of Object.values(obj)) if (x && typeof x === 'object' && !Array.isArray(x)) { const y = topField(x, keys, depth + 1); if (y !== undefined) return y; }
+    return undefined;
+}
+function normItem(v) {
+    const tags = [].concat(first(v, ['label', 'labels', 'tag', 'tags', 'emotion', 'emotions', 'style']) ?? []).flatMap(x => String(x).split(/[,，、;；]/)).map(x => x.replace(/[\[\]]/g, '').trim().toLowerCase()).filter(Boolean);
+    return {
+        id: first(v, ['id', 'line_id', 'lineId', 'index', 'no', 'num']),
+        role: first(v, ['role', 'speaker', 'character', 'name', 'who']),
+        pace: first(v, ['pace', 'speed', 'tempo']),
+        tension_level: first(v, ['tension_level', 'tension', 'intensity', 'level', 'tension_score']),
+        reason: first(v, ['reason', 'why', 'note', 'explanation', 'rationale']),
+        content: first(v, ['content', 'line', 'text', 'script', 'annotated', 'annotated_text', 'annotated_line', 'output']),
+        ambience: first(v, ['ambience', 'ambient', 'environment', 'scene_sound']),
+        tags
+    };
+}
+
 export function parseDeep(raw, lines) {
     const obj = extractJson(raw);
     if (!obj || typeof obj !== 'object') return null;
-    const list = Array.isArray(obj.voices) ? obj.voices : (Array.isArray(obj.lines) ? obj.lines : []);
+    const list = (findItems(obj) || []).map(normItem);
     const byId = new Map(lines.map(l => [Number(l.id), l]));
     const items = new Map();
     list.forEach(v => {
@@ -182,7 +216,11 @@ export function parseDeep(raw, lines) {
         const line = byId.get(id);
         if (!line || items.has(id)) return;
         const t = Math.round(Number(v?.tension_level ?? v?.tension));
-        const content = typeof v?.content === 'string' ? v.content : (typeof v?.line === 'string' ? v.line : '');
+        let content = typeof v?.content === 'string' ? v.content : '';
+        if (!content && v.tags?.length) {
+            const known = v.tags.map(x => (KNOWN_TAGS.has(x) ? x : TAG_ALIAS[x])).filter(Boolean).slice(0, 2);
+            if (known.length) content = `${known.map(x => `[${x}]`).join('')} ${line.text}`;
+        }
         let script = content ? acousticScript(content, line.text) : '';
         // 对不上原文：只保留句首的标签，后面照原文念
         if (content && !script) {
@@ -200,9 +238,10 @@ export function parseDeep(raw, lines) {
         });
     });
     if (!items.size) return null;
-    const tone = TONES.includes(String(obj.tone || '').trim()) ? String(obj.tone).trim() : '';
-    const amb = String(obj.ambience || '').trim().toLowerCase();
-    return { tone, arc: String(obj.arc || '').trim().slice(0, 60), ambience: AMBIENCES.includes(amb) ? amb : 'none', items, partial: !!obj._partial };
+    const toneRaw = String(topField(obj, ['tone', 'mood', 'scene_tone', 'atmosphere']) ?? '').trim();
+    const tone = TONES.includes(toneRaw) ? toneRaw : '';
+    const amb = String(topField(obj, ['ambience', 'ambient', 'environment']) ?? '').trim().toLowerCase();
+    return { tone, arc: String(topField(obj, ['arc', 'summary', 'emotional_arc']) ?? '').trim().slice(0, 60), ambience: AMBIENCES.includes(amb) ? amb : 'none', items, partial: !!obj._partial };
 }
 
 // 基调收紧标签：紧张、恐怖、战斗这类楼层不用气声和低哼；日常、悲伤不用低哼

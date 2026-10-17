@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.2.3'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.2.4'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
