@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.2.1'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.2.2'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -2544,7 +2544,7 @@ export class StoryVoice {
 .yzsv-input { width: 100%; box-sizing: border-box; border: 1px solid #ececf2; border-radius: 11px; padding: 9px 11px; font-size: 13px; background: #f8f8fb; color: #222; outline: none; }
 .yzsv-input:focus { border-color: #a18cd1; background: #fff; }
 select.yzsv-input { height: 40px; padding: 0 30px 0 11px; line-height: 38px; -webkit-appearance: none; appearance: none; background-image: linear-gradient(45deg, transparent 50%, #999 50%), linear-gradient(135deg, #999 50%, transparent 50%); background-position: calc(100% - 16px) 17px, calc(100% - 11px) 17px; background-size: 5px 5px; background-repeat: no-repeat; text-overflow: ellipsis; }
-.yzsv-api[hidden], .yzsv-deepbox[hidden], .yzsv-mode-note[hidden], .yzsv-envnote[hidden] { display: none !important; }
+.yzsv-api[hidden], .yzsv-deepbox[hidden], .yzsv-mode-note[hidden], .yzsv-envnote[hidden], .yzsv-scrollbox[hidden], .yzsv-note[hidden] { display: none !important; }
 .yzsv-cfg { font-size: .7em; }
 .yzsv-play.is-fav { position: relative; border-color: rgba(255,196,60,.8); box-shadow: 0 0 0 1px rgba(255,196,60,.35) inset; }
 .yzsv-play.is-fav::after { content: '★'; position: absolute; top: -7px; right: -5px; font-size: 10px; color: #ffc43c; text-shadow: 0 0 2px rgba(0,0,0,.6); }
@@ -2828,7 +2828,7 @@ export class StoryVoiceApp {
                         <div class="yzsv-field"><label>排除这些标签</label><input class="yzsv-input" data-k="deepExclude" value="${esc(s.deepExclude)}" placeholder="例：<!-- -->, thinking, details, status" spellcheck="false">
                             <div class="yzsv-note">这些标签整段去掉再分析（取出来的内容里也去掉）。注释写 &lt;!-- --&gt;。思考过程（think、thinking 等）本来就会去掉。</div></div>
                         <div class="yzsv-btns" style="grid-template-columns:1fr;margin:0 0 6px"><button type="button" class="yzsv-mini" id="yzsv-deep-preview">看看最新一楼会分析哪些内容</button></div>
-                        <div class="yzsv-note" id="yzsv-deep-preview-out" hidden style="white-space:pre-wrap;background:#f8f8fb;border-radius:10px;padding:8px 10px;max-height:240px;overflow:auto;color:#555"></div>
+                        <div class="yzsv-note yzsv-scrollbox" id="yzsv-deep-preview-out" hidden style="white-space:pre-wrap;word-break:break-all;background:#f8f8fb;border-radius:10px;padding:8px 10px;max-height:46vh;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y;color:#555"></div>
                         <div class="yzsv-row" data-go="api" style="padding:8px 0 0;border:0"><span>深度分析用的连接<small>${esc(this._deepConnLabel(s))}</small></span><button type="button" class="yzr-link">去 API 设置改 ›</button></div>
                         </div>
                     </div>
@@ -3081,7 +3081,10 @@ export class StoryVoiceApp {
         const body = root?.querySelector?.('.yzsv-body');
         if (!body || body.__yzsvScrollFix) return;
         body.__yzsvScrollFix = true;
-        const nudge = () => {
+        // 页面里自己能滚的小框（比如「会分析哪些内容」）：手指在里面时只滚它，整页不动
+        const inner = (e) => !!e?.target?.closest?.('.yzsv-scrollbox');
+        const nudge = (e) => {
+            if (inner(e)) return;
             const max = body.scrollHeight - body.clientHeight;
             if (max <= 0) return;
             if (body.scrollTop <= 0) body.scrollTop = 1;
@@ -3098,8 +3101,9 @@ export class StoryVoiceApp {
         });
         // 兜底：连续几下手指在动、列表却纹丝不动，就由我们自己滚（只在“卡住”时接管）
         let lastY = null, lastTop = 0, stuck = 0, manual = false;
-        body.addEventListener('touchstart', (e) => { lastY = e.touches?.[0]?.clientY ?? null; lastTop = body.scrollTop; stuck = 0; manual = false; }, { passive: true });
+        body.addEventListener('touchstart', (e) => { lastY = inner(e) ? null : (e.touches?.[0]?.clientY ?? null); lastTop = body.scrollTop; stuck = 0; manual = false; }, { passive: true });
         body.addEventListener('touchmove', (e) => {
+            if (inner(e)) return;
             const y = e.touches?.[0]?.clientY;
             if (lastY == null || y == null) return;
             const dy = lastY - y;
@@ -3140,9 +3144,13 @@ export class StoryVoiceApp {
             if (nb) nb.scrollTop = 0;
         }));
         root.querySelector('#yzsv-sub-back')?.addEventListener('click', () => this.render('main'));
-        root.querySelector('#yzsv-deep-preview')?.addEventListener('click', () => {
-            this.sv.saveSettings(this._collect());
+        root.querySelector('#yzsv-deep-preview')?.addEventListener('click', (ev) => {
+            const btn = ev.currentTarget;
             const out = root.querySelector('#yzsv-deep-preview-out');
+            // 再点一下收起
+            if (!out.hidden) { out.hidden = true; btn.textContent = '看看最新一楼会分析哪些内容'; return; }
+            btn.textContent = '收起';
+            this.sv.saveSettings(this._collect());
             const chat = window.SillyTavern?.getContext?.()?.chat || [];
             let id = chat.length - 1;
             while (id >= 0 && (chat[id]?.is_user || chat[id]?.is_system)) id -= 1;
@@ -3152,7 +3160,13 @@ export class StoryVoiceApp {
             const text = this.sv._deepText(msg);
             const { lines } = this.sv._analyze(text, { id, msg, useMemo: false });
             const n = this.sv.getSettings().deepContext;
-            out.textContent = `第 ${id} 楼：找到 ${lines.length} 句台词${lines.length ? '' : '（找不到就不会调用分析模型）'}，另外带上前面 ${n} 楼当前情。\n—— 会分析的正文 ——\n${text.trim().slice(0, 1200)}${text.trim().length > 1200 ? '\n……（后面省略）' : ''}`;
+            // 前情：和真正分析时一样的取法
+            const prev = (n ? chat.slice(Math.max(0, id - n), id) : []).filter(m => m && !m.is_system)
+                .map((m, i, arr) => `【第 ${id - arr.length + i} 楼 · ${m.name || ''}】\n${this.sv._deepRawText(m.mes || '').text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim()}`).join('\n\n');
+            out.textContent = `第 ${id} 楼：找到 ${lines.length} 句台词${lines.length ? '' : '（找不到就不会调用分析模型）'}，另外带上前面 ${n} 楼当前情。`
+                + `\n\n—— 要分析的这一楼（全部） ——\n${text.trim()}`
+                + (n ? `\n\n—— 前情（前面 ${n} 楼，只用来理解剧情） ——\n${prev || '（没有）'}` : '');
+            out.scrollTop = 0;
         });
         root.querySelectorAll('[data-entry]').forEach(b => b.addEventListener('click', () => {
             root.querySelectorAll('[data-entry]').forEach(x => x.classList.toggle('is-on', x === b));
