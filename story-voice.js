@@ -2550,10 +2550,10 @@ export class StoryVoiceApp {
                             <input type="hidden" data-k="analysisMode" value="${esc(s.analysisMode)}">
                         </div>
                         <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写正文时顺手标上看不见的标记——每句台词前的 [[名字|语气]]，每楼开头的情节 [[基调:xx]]<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，每楼开头和换场景的地方的环境 [[环境:xx]]（xx 是雨声、森林、教室等 41 种之一，none = 安静没有环境声）</span>。边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调<span class="yzsv-envnote" ${s.ambienceOn ? '' : 'hidden'}>，环境声也能在 🎭 里改</span>。</div>
-                        <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用 Fish 生成这一句。</div>
+                        <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用这个人用的语音渠道重新生成这一句（Fish、MiniMax、OpenAI、豆包……会自动换成各自认的写法）。</div>
 
                         <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
-                        <div class="yzsv-note" style="margin:-4px 0 12px;">把这一楼正文（连同前几楼的剧情）交给副 API 当配音导演：读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时张力换成 Fish 的情绪起伏、语速换成快慢。</div>
+                        <div class="yzsv-note" style="margin:-4px 0 12px;">把这一楼正文（连同前几楼的剧情）交给副 API 当配音导演：读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时按每个人用的语音渠道换成它认的写法（Fish 的句中标签、MiniMax 的整句情绪、OpenAI / 豆包 / IndexTTS 的语气说明），语速在播放时变快变慢。</div>
                         <div class="yzsv-field"><label>什么时候分析</label>
                             <div class="yzsv-seg">
                                 <button type="button" data-auto="0" class="${!s.deepAuto ? 'is-on' : ''}">点播放时才分析</button>
