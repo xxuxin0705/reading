@@ -3,7 +3,23 @@
 .yzr-overlay[hidden] { display: none !important; }
 .yzr-panel { width: min(440px, 100vw); height: min(860px, 92vh); border-radius: 22px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.35); background: #f6f6fa; }
 @media (max-width: 520px) { .yzr-panel { width: 100vw; height: 100%; border-radius: 0; } .yzr-overlay { align-items: stretch; } }
-.yzr-panel .yzsv-head { padding-top: 10px; }
+.yzr-panel .yzsv-head { height: 56px; padding: 8px 10px; }
+/* 标题栏：左（返回 / 占位）· 中（标题）· 右（关闭），三栏固定，不会互相挤 */
+.yzr-panel .yzsv-head.yzr-head { display: grid; grid-template-columns: 36px minmax(0, 1fr) 36px; align-items: center; gap: 6px; }
+.yzr-panel .yzr-head .yzsv-head-title { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yzr-panel .yzr-head-spacer { width: 34px; height: 34px; }
+.yzr-panel .yzr-close-panel { display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.05); font-size: 15px; color: #555; }
+.yzr-panel .yzr-close-panel:active { background: rgba(0,0,0,.1); }
+/* 首页入口 */
+.yzr-entries { padding: 2px 6px; }
+.yzr-entry { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 8px; border: 0; border-bottom: 1px solid #f1f1f4; background: transparent; cursor: pointer; text-align: left; font-family: inherit; color: #222; }
+.yzr-entry:last-child { border-bottom: 0; }
+.yzr-entry-ic { flex: 0 0 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center; font-size: 17px; background: #f1ecff; }
+.yzr-entry-t { flex: 1; min-width: 0; }
+.yzr-entry-t b { display: block; font-size: 14.5px; font-weight: 600; }
+.yzr-entry-t small { display: block; margin-top: 2px; font-size: 11.5px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yzr-entry > i { font-style: normal; color: #bbb; font-size: 18px; }
+.yzr-link { border: 0; background: transparent; color: #7b62c9; font-size: 12px; padding: 0; cursor: pointer; font-family: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .yzr-badge { font-size: 10.5px; color: #fff !important; background: #a18cd1; border-radius: 6px; padding: 0 6px; }
 /* 角色音色库：读音行 */
 .yzrd { display: flex; flex-direction: column; gap: 6px; }
@@ -12,3 +28,24 @@
 .yzrd-row i { font-style: normal; color: #aaa; font-size: 12px; flex: 0 0 auto; }
 .yzrd-del { flex: 0 0 26px; height: 26px; border: 0; border-radius: 50%; background: rgba(0,0,0,.06); color: #6a7d92; cursor: pointer; }
 .yzrd-add { align-self: flex-start; height: 30px; padding: 0 12px; border: 1px dashed #b9d7f5; border-radius: 9px; background: transparent; color: #2b6cb0; font-size: 12.5px; cursor: pointer; }
+/* 角色库 */
+.yzr-lib-tabs { margin: 2px 0 8px; }
+.yzr-lib-tabs button em { font-style: normal; font-size: 10.5px; color: #aaa; margin-left: 3px; }
+.yzr-lib-tabs button.is-on em { color: #8a73c9; }
+.yzr-lib-item .yzsv-fav-top { align-items: center; }
+.yzr-av { flex: 0 0 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12.5px; font-weight: 700; background: linear-gradient(135deg, #a18cd1, #fbc2eb); }
+.yzr-av.is-user { background: linear-gradient(135deg, #7f9cf5, #a0e7e5); }
+.yzr-av.is-npc { background: linear-gradient(135deg, #b8b8c8, #d8d4e8); }
+.yzr-kind { font-size: 10.5px !important; border-radius: 6px; padding: 0 6px; background: #f1ecff; color: #7b62c9 !important; }
+.yzr-kind.is-user { background: #e8efff; color: #4a6fd1 !important; }
+.yzr-kind.is-npc { background: #f0f0f4; color: #777 !important; }
+.yzr-tagline { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.yzr-tagline span { font-size: 11px; color: #3b82f6; background: #eef4ff; border-radius: 6px; padding: 1px 7px; }
+.yzr-add { width: 100%; margin: 0 0 14px; }
+.yzr-vfield .yzsv-input { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+.yzr-more { margin-top: 4px; }
+.yzr-more summary { cursor: pointer; font-size: 12.5px; color: #7b62c9; padding: 6px 0; list-style: none; }
+.yzr-more summary::-webkit-details-marker { display: none; }
+.yzr-more summary::before { content: '▸ '; }
+.yzr-more[open] summary::before { content: '▾ '; }
+.yzr-more .yzr-vfield { margin-top: 8px; }

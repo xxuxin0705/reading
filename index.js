@@ -37,15 +37,15 @@ const shell = {
         this.rootEl.innerHTML = html;
         const head = this.rootEl.querySelector('.yzsv-head');
         if (!head) return;
-        // 每个子页面共用同一个关闭入口，直接关闭弹窗而非返回上一页。
-        head.style.position = 'relative';
+        // 每个子页面共用同一个关闭入口：放进标题栏最右边（不再悬浮叠在别的按钮上）
+        head.classList.add('yzr-head');
+        if (!head.querySelector('.yzsv-back:not(.yzr-close-panel)')) head.insertAdjacentHTML('afterbegin', '<span class="yzr-head-spacer" aria-hidden="true"></span>');
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'yzsv-back yzr-close-panel';
         btn.setAttribute('aria-label', '关闭正文朗读');
         btn.title = '关闭';
         btn.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
-        btn.style.cssText = 'position:absolute;right:10px;top:32px;display:flex;align-items:center;justify-content:center;z-index:2;';
         btn.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -68,7 +68,7 @@ function openPanel() {
     }
     overlay.hidden = false;
     shell.rootEl = overlay.querySelector('.yzr-panel');
-    app.render();
+    app.render('main');
 }
 
 function closePanel() {

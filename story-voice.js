@@ -2331,33 +2331,104 @@ export class StoryVoiceApp {
         this.sv = storyVoice;
     }
 
-    render() {
+    // 页面切换：main = 首页；api = API 设置；emotion = 情绪分析
+    render(page) {
+        if (page) this._page = page;
+        const p = this._page || 'main';
+        if (p === 'api') return this._renderApi();
+        if (p === 'emotion') return this._renderEmotion();
+        return this._renderMain();
+    }
+
+    _sw(s, k, title, desc, style = '') {
+        return `<div class="yzsv-row" data-sw-row style="${style}"><span>${title}<small>${desc}</small></span><span class="yzsv-switch${s[k] ? ' is-on' : ''}" role="switch" aria-checked="${s[k] ? 'true' : 'false'}" data-k="${k}"><i></i></span></div>`;
+    }
+
+    _subHead(title) {
+        return `<div class="yzsv-head">
+                    <button class="yzsv-back" id="yzsv-sub-back" type="button" aria-label="返回"><i class="fa-solid fa-chevron-left"></i></button>
+                    <div class="yzsv-head-title">${title}</div>
+                </div>`;
+    }
+
+    _deepConnLabel(s) {
+        if (s.deepProfile === '__custom__') return `自定义 API${s.deepModel ? ' · ' + s.deepModel : ''}`;
+        if (s.deepProfile) { const p = this.sv.connectionProfiles().find(x => x.id === s.deepProfile); return `酒馆连接 · ${p?.name || '（已不存在）'}`; }
+        return '跟随酒馆当前的 API';
+    }
+
+    _renderMain() {
         const s = this.sv.getSettings();
         const spk = s.speakers.length ? s.speakers : [{ name: '', voice: '' }];
-        const sw = (k, title, desc, style = '') => `<div class="yzsv-row" data-sw-row style="${style}"><span>${title}<small>${desc}</small></span><span class="yzsv-switch${s[k] ? ' is-on' : ''}" role="switch" aria-checked="${s[k] ? 'true' : 'false'}" data-k="${k}"><i></i></span></div>`;
+        const sw = (...a) => this._sw(s, ...a);
         const row = (x) => `<div class="yzsv-spk"><span class="yzsv-spk-av">${esc((x.name || '?').slice(0, 1))}</span><input class="yzsv-input" data-spk="name" placeholder="角色名" value="${esc(x.name)}"><input class="yzsv-input" data-spk="voice" placeholder="音色 ID" value="${esc(x.voice)}"><button type="button" class="yzsv-spk-del" data-spk-del title="删除">✕</button></div>`;
         const count = this.sv.standalone ? (this.sv.voiceSource?.count?.() || 0) : s.speakers.filter(x => x.name && x.voice).length;
+        // 角色库摘要
+        let libSum = '';
+        try {
+            const all = this.sv.voiceSource?.active?.() || [];
+            const npc = all.filter(x => !x.isUser && (x.isNpc ?? !!x.gender)).length;
+            const me = all.find(x => x.isUser);
+            libSum = `${me ? `我：${me.name}` : '还没设「我」'} · 角色 ${all.length - npc - (me ? 1 : 0)} · NPC ${npc}`;
+        } catch (e) { libSum = ''; }
+        // API 摘要
+        const chanLabel = (id) => (TTS_CHANNELS.find(c => c.id === id) || {}).label || id;
+        const ready = TTS_CHANNELS.filter(c => /✓/.test(this._channelState(c.id))).length;
+        const apiSum = s.channelMode === 'unified' ? `统一用 ${chanLabel(s.ttsProvider || 'fish')}${this._channelState(s.ttsProvider || 'fish')}` : `每人用自己的渠道 · 已配好 ${ready} 个`;
+        const modeName = { simple: '简单分析', deep: '深度分析', manual: '手动' }[s.analysisMode] || '简单分析';
+        const emoSum = `${modeName}${s.analysisMode === 'deep' ? (s.deepAuto ? ' · 每轮自动' : ' · 点播放时分析') : ''} · 环境声${s.ambienceOn ? '开' : '关'}`;
+        const entry = (go, ic, title, sum) => `<button type="button" class="yzr-entry" data-go="${go}"><span class="yzr-entry-ic">${ic}</span><span class="yzr-entry-t"><b>${title}</b><small>${esc(sum)}</small></span><i>›</i></button>`;
         const html = `
             <div class="yzsv-page">
                 <div class="yzsv-head">
-                    <button class="yzsv-back" id="yzsv-back" type="button" aria-label="返回"><i class="fa-solid fa-chevron-left"></i></button>
+                    ${this.sv.standalone ? '' : '<button class="yzsv-back" id="yzsv-back" type="button" aria-label="返回"><i class="fa-solid fa-chevron-left"></i></button>'}
                     <div class="yzsv-head-title">正文朗读</div>
-                    <button type="button" id="yzsv-open-lib" class="yzsv-mini" style="margin-left:auto;white-space:nowrap">👥 角色库</button>
                 </div>
                 <div class="yzsv-body app-body">
                     <div class="yzsv-hero">
                         <div class="yzsv-hero-icon">🔊</div>
                         <div><b>${s.enabled ? '朗读已开启' : '朗读已关闭'}</b><small>角色音色 ${count} 个 · 对白符号 ${esc(s.quotes || '未设置')}</small></div>
                     </div>
-                    <button type="button" class="yzsv-favbtn" id="yzsv-open-favs"><span>⭐ 语音收藏</span><small>长按正文里的 ▶ 收藏，再长按取消</small><i>›</i></button>
+
+                    <div class="yzsv-card yzr-entries">
+                        ${this.sv.standalone ? entry('lib', '👥', '角色库', libSum) : ''}
+                        ${entry('api', '🔌', 'API 设置', apiSum)}
+                        ${entry('emotion', '🎭', '情绪分析', emoSum)}
+                        ${entry('favs', '⭐', '语音收藏', '长按正文里的 ▶ 收藏，再长按取消')}
+                    </div>
 
                     <div class="yzsv-sec">基础</div>
                     <div class="yzsv-card">
                         ${sw('enabled', '启用正文朗读', '正文里对白符号中的台词后面出现 ▶ 和 ↻')}
-                        
                         ${sw('lineEdit', '每句后面显示 🎭', '单句调整演法的按钮；关掉后每句只剩 ▶ ↻，想调时在楼层下面的「逐句调整」或长按 ↻ 里进')}
                     </div>
 
+                    <div class="yzsv-sec">对白符号 · 跳过符号</div>
+                    <div class="yzsv-card pad">
+                        <div class="yzsv-field"><label>对白符号（这些符号里的是台词）</label><input class="yzsv-input" data-k="quotes" value="${esc(s.quotes)}"></div>
+                        <div class="yzsv-field"><label>跳过符号（这些符号里的不读）</label><input class="yzsv-input" data-k="skips" value="${esc(s.skips)}"></div>
+                        <div class="yzsv-note">成对写，逗号分隔；开合各一个字符写在一起（「」），多字符或相同字符中间空一格（** **）。台词在引号里、译文在括号里：对白填 “”，跳过填 （）。</div>
+                    </div>
+
+                    ${!this.sv.standalone ? `<div class="yzsv-sec">角色音色</div><div class="yzsv-card pad"><div class="yzsv-field"><div id="yzsv-spk-list">${spk.map(row).join('')}</div><button type="button" class="yzsv-mini is-wide" id="yzsv-spk-add">＋ 添加角色</button></div></div>` : ''}
+                    <div class="yzsv-btns">
+                        <button type="button" class="yzsv-mini is-primary" id="yzsv-save">保存</button>
+                        <button type="button" class="yzsv-mini" id="yzsv-test">试听</button>
+                        <button type="button" class="yzsv-mini" id="yzsv-clear">清缓存</button>
+                    </div>
+                    <div class="yzsv-note" style="margin:8px 6px 0;">每句语音生成后会缓存，再点 ▶ 不会重复扣费。「试听」用默认音色；角色、NPC 的音色在「角色库」里配。</div>
+                </div>
+            </div>`;
+        this.phoneShell.setContent(html, 'story-voice');
+        this._bind();
+    }
+
+    _renderApi() {
+        const s = this.sv.getSettings();
+        const html = `
+            <div class="yzsv-page">
+                ${this._subHead('API 设置')}
+                <div class="yzsv-body app-body">
                     <div class="yzsv-sec">语音渠道</div>
                     <div class="yzsv-card pad">
                         <div class="yzsv-field"><label>每个人用哪个渠道</label>
@@ -2371,36 +2442,14 @@ export class StoryVoiceApp {
                             <select class="yzsv-input" data-k="ttsProvider">${TTS_CHANNELS.map(c => `<option value="${c.id}" ${s.ttsProvider === c.id ? 'selected' : ''}>${c.label}${this._channelState(c.id)}</option>`).join('')}</select>
                         </div>
                         ${this._channelFields(s, s.ttsProvider || 'fish')}
-                        ` : `<div class="yzsv-note" style="margin:8px 0">每位角色在右上角「角色库」选择自己的渠道和音色。下方列出全部渠道，可分别填写地址、密钥及模型；配置状态独立保存。</div>
+                        ` : `<div class="yzsv-note" style="margin:8px 0">每位角色在首页「角色库」里选自己的渠道和音色。下方列出全部渠道，可分别填写地址、密钥及模型；配置状态独立保存。</div>
                         ${TTS_CHANNELS.map(c => `<div class="yzsv-field" style="margin-top:15px"><label style="font-weight:600">${c.label} ${this._channelState(c.id)}</label></div>${this._channelFields(s, c.id)}`).join('')}`}
                     </div>
 
-                    <div class="yzsv-sec">情绪分析</div>
-                    <div class="yzsv-card pad">
-                        <div class="yzsv-field"><label>怎么分析情绪</label>
-                            <div class="yzsv-seg">
-                                <button type="button" data-mode="simple" class="${s.analysisMode === 'simple' ? 'is-on' : ''}">简单分析</button>
-                                <button type="button" data-mode="deep" class="${s.analysisMode === 'deep' ? 'is-on' : ''}">深度分析</button>
-                                <button type="button" data-mode="manual" class="${s.analysisMode === 'manual' ? 'is-on' : ''}">手动</button>
-                            </div>
-                            <input type="hidden" data-k="analysisMode" value="${esc(s.analysisMode)}">
-                        </div>
-                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写台词时顺手标上 [[名字|语气]]，边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调。</div>
-                        <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用 Fish 生成这一句。</div>
 
-                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层雨声、风声、海浪、虫鸣、室内、篝火、人声嘈杂、咖啡馆。深度分析和简单分析按正文场景自动选；手动在 🎭 里给这一楼选', 'padding:0 0 10px;')}
-                        <div class="yzsv-field"><label>环境声音量 <span class="yzsv-ambv">${esc(s.ambienceVol)}</span>%</label><input type="range" min="5" max="80" step="5" class="yzsv-range" data-k="ambienceVol" value="${esc(s.ambienceVol)}"></div>
-                        ${sw('autoOno', '自动加拟声词', '简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加', 'padding:0 0 10px;')}
-                        <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
-                        <div class="yzsv-note" style="margin:-4px 0 12px;">把这一楼正文（连同前几楼的剧情）交给副 API 当配音导演：读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时张力换成 Fish 的情绪起伏、语速换成快慢。</div>
-                        <div class="yzsv-field"><label>什么时候分析</label>
-                            <div class="yzsv-seg">
-                                <button type="button" data-auto="0" class="${!s.deepAuto ? 'is-on' : ''}">点播放时才分析</button>
-                                <button type="button" data-auto="1" class="${s.deepAuto ? 'is-on' : ''}">每轮自动分析</button>
-                            </div>
-                            <input type="hidden" data-k="deepAuto" value="${s.deepAuto ? '1' : '0'}">
-                        </div>
-                        <div class="yzsv-note" style="margin:-4px 0 12px;">点播放时才分析：每楼照常先挂 ▶ 和 ↻，点了哪一楼才调用副 API 分析那一楼，分析完生成语音、弹出提示并开始播放，不点就不花钱。<br>每轮自动分析：每次回复写完就自动分析并提前生成语音，点 ▶ 马上能听，但每轮都会调用一次副 API。</div>
+                    <div class="yzsv-sec">深度分析用的模型</div>
+                    <div class="yzsv-card pad">
+                        <div class="yzsv-note" style="margin:0 0 12px;">只在「情绪分析」选了深度分析时才会用到（当前：${esc({ simple: '简单分析', deep: '深度分析', manual: '手动' }[s.analysisMode] || '简单分析')}）。</div>
                         <div class="yzsv-field"><label>深度分析用的连接</label>
                             <select class="yzsv-input" data-k="deepProfile">
                                 <option value="">跟随酒馆当前的 API</option>
@@ -2435,37 +2484,53 @@ export class StoryVoiceApp {
                         </div>
                         <div class="yzsv-field"><label>单次分析最长等待（秒）</label><input class="yzsv-input" data-k="deepTimeout" type="number" min="30" max="600" value="${esc(s.deepTimeout)}"></div>
                         <div class="yzsv-note">可以跟随酒馆、选酒馆「连接配置管理」里存的连接，或者选「自定义 API」自己填地址和密钥（OpenAI 兼容格式），拉取后选模型。分析结果只存在这台设备的浏览器里（最近 100 楼，更早的自动删），正文没改就不会重复调用；「清缓存」会一起清掉；楼层下面可以点「重新分析」。</div>
-                        </div>
                     </div>
+                </div>
+            </div>`;
+        this.phoneShell.setContent(html, 'story-voice');
+        this._bind();
+    }
 
-                    <div class="yzsv-sec">对白符号 · 跳过符号</div>
+    _renderEmotion() {
+        const s = this.sv.getSettings();
+        const sw = (...a) => this._sw(s, ...a);
+        const html = `
+            <div class="yzsv-page">
+                ${this._subHead('情绪分析')}
+                <div class="yzsv-body app-body">
+                    <div class="yzsv-sec">分析模式</div>
                     <div class="yzsv-card pad">
-                        <div class="yzsv-field"><label>对白符号（这些符号里的是台词）</label><input class="yzsv-input" data-k="quotes" value="${esc(s.quotes)}"></div>
-                        <div class="yzsv-field"><label>跳过符号（这些符号里的不读）</label><input class="yzsv-input" data-k="skips" value="${esc(s.skips)}"></div>
-                        <div class="yzsv-note">成对写，逗号分隔；开合各一个字符写在一起（「」），多字符或相同字符中间空一格（** **）。台词在引号里、译文在括号里：对白填 “”，跳过填 （）。</div>
-                    </div>
-
-                    <div class="yzsv-sec">音色</div>
-                    <div class="yzsv-card pad">
-                        <div class="yzsv-field"><label>没配音色的人</label>
+                        <div class="yzsv-field"><label>怎么分析情绪</label>
                             <div class="yzsv-seg">
-                                <button type="button" data-npc="only" class="${s.npcMode !== 'npc' ? 'is-on' : ''}">不读（只读配了音色的）</button>
-                                <button type="button" data-npc="npc" class="${s.npcMode === 'npc' ? 'is-on' : ''}">用默认 NPC 音色</button>
+                                <button type="button" data-mode="simple" class="${s.analysisMode === 'simple' ? 'is-on' : ''}">简单分析</button>
+                                <button type="button" data-mode="deep" class="${s.analysisMode === 'deep' ? 'is-on' : ''}">深度分析</button>
+                                <button type="button" data-mode="manual" class="${s.analysisMode === 'manual' ? 'is-on' : ''}">手动</button>
                             </div>
-                            <input type="hidden" data-k="npcMode" value="${s.npcMode === 'npc' ? 'npc' : 'only'}">
+                            <input type="hidden" data-k="analysisMode" value="${esc(s.analysisMode)}">
                         </div>
-                        <div class="yzsv-field"><label>默认男 NPC 音色</label><input class="yzsv-input" data-k="npcMale" value="${esc(s.npcMale)}" placeholder="男性配角、路人用这个"></div>
-                        <div class="yzsv-field"><label>默认女 NPC 音色</label><input class="yzsv-input" data-k="npcFemale" value="${esc(s.npcFemale)}" placeholder="女性配角、路人用这个"></div>
-                        <div class="yzsv-field"><label>默认音色</label><input class="yzsv-input" data-k="voice" value="${esc(s.voice)}" placeholder="分不出男女时用；留空用渠道的默认音色"></div>
-                        <div class="yzsv-note" style="margin:-4px 0 12px;">男女怎么判断：模型标的 [[名字/男]]、角色音色库里设的性别；分不出就用默认音色。正文里长按 ↻ 也可以手动指定按男声或女声读。</div>
-                        ${!this.sv.standalone ? `<div class="yzsv-field"><label>角色音色</label><div id="yzsv-spk-list">${spk.map(row).join('')}</div><button type="button" class="yzsv-mini is-wide" id="yzsv-spk-add">＋ 添加角色</button></div>` : '<div class="yzsv-note">角色音色请到页面右上角「角色库」管理，当前聊天独立保存。</div>'}
-                        <div class="yzsv-btns">
-                            <button type="button" class="yzsv-mini is-primary" id="yzsv-save">保存</button>
-                            <button type="button" class="yzsv-mini" id="yzsv-test">试听</button>
-                            <button type="button" class="yzsv-mini" id="yzsv-clear">清缓存</button>
+                        <div class="yzsv-note yzsv-mode-note" data-for="simple" ${s.analysisMode === 'simple' ? '' : 'hidden'} style="margin:-4px 0 10px;">简单分析：正文模型写台词时顺手标上 [[名字|语气]]，边写边生成，最快，不额外调用模型。哪句不对，点那句后面的 🎭 自己调。</div>
+                        <div class="yzsv-note yzsv-mode-note" data-for="manual" ${s.analysisMode === 'manual' ? '' : 'hidden'} style="margin:-4px 0 10px;">手动：模型只标是谁说的，不写语气、不调用任何分析，先按原样读；想要情绪就点那句后面的 🎭（或楼层下面的「🎭 逐句调整」）自己配：情绪、声音、语气词、叠字、张力、语速，改完点 ▶ 只调用 Fish 生成这一句。</div>
+
+                        <div class="yzsv-deepbox" ${s.analysisMode === 'deep' ? '' : 'hidden'}>
+                        <div class="yzsv-note" style="margin:-4px 0 12px;">把这一楼正文（连同前几楼的剧情）交给副 API 当配音导演：读懂剧情走向和人物此刻的心理，逐句定张力（1~5）、语速，在台词里插入叹气、倒抽气、哭腔、耳语、哽咽叠字等，合成时张力换成 Fish 的情绪起伏、语速换成快慢。</div>
+                        <div class="yzsv-field"><label>什么时候分析</label>
+                            <div class="yzsv-seg">
+                                <button type="button" data-auto="0" class="${!s.deepAuto ? 'is-on' : ''}">点播放时才分析</button>
+                                <button type="button" data-auto="1" class="${s.deepAuto ? 'is-on' : ''}">每轮自动分析</button>
+                            </div>
+                            <input type="hidden" data-k="deepAuto" value="${s.deepAuto ? '1' : '0'}">
+                        </div>
+                        <div class="yzsv-note" style="margin:-4px 0 12px;">点播放时才分析：每楼照常先挂 ▶ 和 ↻，点了哪一楼才调用副 API 分析那一楼，分析完生成语音、弹出提示并开始播放，不点就不花钱。<br>每轮自动分析：每次回复写完就自动分析并提前生成语音，点 ▶ 马上能听，但每轮都会调用一次副 API。</div>
+                        <div class="yzsv-row" data-go="api" style="padding:8px 0 0;border:0"><span>深度分析用的连接<small>${esc(this._deepConnLabel(s))}</small></span><button type="button" class="yzr-link">去 API 设置改 ›</button></div>
                         </div>
                     </div>
-                    <div class="yzsv-note" style="margin:0 6px;">每句语音生成后会缓存，再点 ▶ 不会重复扣费。</div>
+
+                    <div class="yzsv-sec">环境声 · 拟声词</div>
+                    <div class="yzsv-card pad">
+                        ${sw('ambienceOn', '环境声', '播台词时在底下轻轻垫一层雨声、风声、海浪、虫鸣、室内、篝火、人声嘈杂、咖啡馆。深度分析和简单分析按正文场景自动选；手动在 🎭 里给这一楼选', 'padding:0 0 10px;')}
+                        <div class="yzsv-field"><label>环境声音量 <span class="yzsv-ambv">${esc(s.ambienceVol)}</span>%</label><input type="range" min="5" max="80" step="5" class="yzsv-range" data-k="ambienceVol" value="${esc(s.ambienceVol)}"></div>
+                        ${sw('autoOno', '自动加拟声词', '简单分析用：语气是大笑就在台词前加「哈哈」，哭加「呜……」，叹气加「唉……」（日文台词用 あはは / うぅ / はぁ）。深度分析由模型自己加，手动在 🎭 的「拟声/音效」里加', 'padding:0 0 10px;')}
+                    </div>
                 </div>
             </div>`;
         this.phoneShell.setContent(html, 'story-voice');
@@ -2658,36 +2723,41 @@ export class StoryVoiceApp {
         } catch (e) { return ''; }
     }
 
+    // 只收集当前页面上有的输入框；不在这一页的设置沿用已保存的值（分页后不会被清空）
     _collect() {
         const root = this._root();
+        const cur = this.sv.getSettings();
         const val = k => root.querySelector(`[data-k="${k}"]`);
-        const on = k => { const el = root.querySelector(`.yzsv-switch[data-k="${k}"]`); return el ? el.classList.contains('is-on') : !!this.sv.getSettings()[k]; };
-        const speakers = Array.from(root.querySelectorAll('.yzsv-spk')).map(row => ({
+        const on = k => { const el = root.querySelector(`.yzsv-switch[data-k="${k}"]`); return el ? el.classList.contains('is-on') : !!cur[k]; };
+        const str = k => { const el = val(k); return el ? String(el.value || '').trim() : cur[k]; };
+        const num = (k, lo, hi, def) => { const el = val(k); return el ? Math.min(hi, Math.max(lo, Number(el.value) || def)) : cur[k]; };
+        const speakers = root.querySelector('#yzsv-spk-list') ? Array.from(root.querySelectorAll('.yzsv-spk')).map(row => ({
             name: String(row.querySelector('[data-spk="name"]')?.value || '').trim(),
             voice: String(row.querySelector('[data-spk="voice"]')?.value || '').trim()
-        })).filter(x => x.name || x.voice);
+        })).filter(x => x.name || x.voice) : cur.speakers;
+        const mode = str('analysisMode');
         return {
             enabled: on('enabled'),
             readUser: false,
             lineEdit: on('lineEdit'),
-            analysisMode: ['simple', 'deep', 'manual'].includes(String(val('analysisMode')?.value)) ? String(val('analysisMode').value) : 'simple',
+            analysisMode: ['simple', 'deep', 'manual'].includes(mode) ? mode : 'simple',
             ambienceOn: on('ambienceOn'),
             autoOno: on('autoOno'),
-            ambienceVol: Math.min(80, Math.max(5, Number(val('ambienceVol')?.value) || 30)),
-            deepProfile: String(val('deepProfile')?.value || ''),
-            deepApiUrl: String(val('deepApiUrl')?.value || '').trim(),
-            deepApiKey: String(val('deepApiKey')?.value || '').trim(),
-            deepModel: String(val('deepModel')?.value || '').trim(),
-            deepModels: this.sv.getSettings().deepModels,
-            deepAuto: String(val('deepAuto')?.value || '0') === '1',
-            deepTimeout: Math.min(600, Math.max(30, Number(val('deepTimeout')?.value) || 150)),
-            quotes: String(val('quotes')?.value || '').trim() || DEFAULTS.quotes,
-            skips: String(val('skips')?.value || '').trim(),
-            voice: String(val('voice')?.value || '').trim(),
-            npcMode: String(val('npcMode')?.value || 'only') === 'npc' ? 'npc' : 'only',
-            ttsProvider: String(val('ttsProvider')?.value || this.sv.getSettings().ttsProvider || 'fish'),
-            npcMale: String(val('npcMale')?.value || '').trim(),
-            npcFemale: String(val('npcFemale')?.value || '').trim(),
+            ambienceVol: num('ambienceVol', 5, 80, 30),
+            deepProfile: str('deepProfile') || '',
+            deepApiUrl: str('deepApiUrl') || '',
+            deepApiKey: str('deepApiKey') || '',
+            deepModel: str('deepModel') || '',
+            deepModels: cur.deepModels,
+            deepAuto: val('deepAuto') ? String(val('deepAuto').value || '0') === '1' : !!cur.deepAuto,
+            deepTimeout: num('deepTimeout', 30, 600, 150),
+            quotes: val('quotes') ? (str('quotes') || DEFAULTS.quotes) : cur.quotes,
+            skips: str('skips') || '',
+            voice: str('voice') || '',
+            npcMode: (str('npcMode') || 'only') === 'npc' ? 'npc' : 'only',
+            ttsProvider: str('ttsProvider') || cur.ttsProvider || 'fish',
+            npcMale: str('npcMale') || '',
+            npcFemale: str('npcFemale') || '',
             speakers
         };
     }
@@ -2747,8 +2817,16 @@ export class StoryVoiceApp {
             toast('已保存', b.dataset.npc === 'npc' ? '没配音色的人用默认 NPC 音色读' : '只读配了音色的人');
         }));
         const toast = (t, m, i = '🔊') => this.phoneShell?.showNotification?.(t, m, i);
-        root.querySelector('#yzsv-open-favs')?.addEventListener('click', () => this.renderFavs());
-        root.querySelector('#yzsv-open-lib')?.addEventListener('click', () => this.phoneShell?.openLibrary?.(this));
+        // 首页入口 / 子页面返回
+        root.querySelectorAll('[data-go]').forEach(b => b.addEventListener('click', () => {
+            const go = b.dataset.go;
+            if (go === 'favs') return this.renderFavs();
+            if (go === 'lib') return this.phoneShell?.openLibrary?.(this);
+            this.render(go);
+            const nb = this._root().querySelector('.yzsv-body');
+            if (nb) nb.scrollTop = 0;
+        }));
+        root.querySelector('#yzsv-sub-back')?.addEventListener('click', () => this.render('main'));
         root.querySelector('#yzsv-back')?.addEventListener('click', () => {
             if (typeof this.phoneShell?.goHome === 'function') this.phoneShell.goHome();
             else window.dispatchEvent(new CustomEvent('phone:goHome'));
@@ -2949,7 +3027,7 @@ export class StoryVoiceApp {
             toast('已删除', p.name);
         });
         root.querySelector('select[data-k="deepModel"]')?.addEventListener('change', () => { this.sv.saveSettings(this._collect()); toast('已保存', `深度分析用 ${root.querySelector('select[data-k="deepModel"]').value}`); });
-        root.querySelector('.yzsv-eye')?.addEventListener('click', (e) => {
+        root.querySelector('.yzsv-api .yzsv-eye')?.addEventListener('click', (e) => {
             const inp = root.querySelector('[data-k="deepApiKey"]');
             if (!inp) return;
             const show = inp.type === 'password';
