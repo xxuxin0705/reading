@@ -528,6 +528,7 @@ export class StoryVoice {
         s.emotionCue = s.analysisMode === 'simple';    // 语气只有简单分析需要正文模型写
         s.lineEdit = s.lineEdit !== false;
         s.channelMode = s.channelMode === 'unified' ? 'unified' : 'per';
+        s.readUser = false;
         s.deepPresets = Array.isArray(s.deepPresets) ? s.deepPresets.filter(x => x && x.id) : [];
         s.customModels = Array.isArray(s.customModels) ? s.customModels.map(String).filter(Boolean).slice(0, 300) : [];
         s.deepModels = Array.isArray(s.deepModels) ? s.deepModels.map(String).filter(Boolean).slice(0, 500) : [];
@@ -1432,7 +1433,7 @@ export class StoryVoice {
     // 这一句最后走哪个渠道：统一模式一律用选的渠道；按人模式用这个人自己配的渠道
     _providerFor(vi = {}) {
         const st = this.getSettings();
-        if (st.ttsProvider && st.channelMode === 'unified') return this._storyProvider();
+        if (st.channelMode === 'unified') return this._storyProvider();
         return vi.provider || this._storyProvider();
     }
 
@@ -1452,10 +1453,10 @@ export class StoryVoice {
         const bound = String(obj.ttsProvider || '').trim();
         const lang = String(obj.ttsLanguageBoost || 'auto').trim() || 'auto';
         const has = Object.entries(voices).filter(([, v]) => String(v || '').trim());
-        if (String(voices[globalProvider] || '').trim()) return { voice: String(voices[globalProvider]).trim(), provider: globalProvider, languageBoost: lang };
-        // 统一用一个渠道：这个人没填这个渠道的音色，就用这个渠道的默认音色（别把别家的音色 ID 发过去，会报 voice id not exist）
         const st = this.getSettings();
-        if (st.ttsProvider && st.channelMode === 'unified') {
+        if (st.channelMode === 'unified' && String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider] || '').trim()) return { voice: String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider]).trim(), provider: st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider, languageBoost: lang };
+        // 统一用一个渠道：这个人没填这个渠道的音色，就用这个渠道的默认音色（别把别家的音色 ID 发过去，会报 voice id not exist）
+        if (st.channelMode === 'unified') {
             return (has.length || String(obj.ttsVoice || '').trim()) ? { voice: '', provider: globalProvider, languageBoost: lang, fallbackVoice: true } : null;
         }
         // 每个人按自己配的：他填了哪个渠道的音色就走哪个渠道
@@ -1593,7 +1594,8 @@ export class StoryVoice {
         const st = this.getSettings();
         // 选了渠道：强制走它（别让联系人里绑的旧渠道抢走）
         opts.provider = this._providerFor(vi);
-        if (st.ttsProvider === 'custom_openai' && opts.provider === 'openai' && (!vi.provider || st.channelMode === 'unified' || vi.provider === 'openai')) {
+        if (opts.provider === 'custom_openai' || (st.channelMode === 'unified' && st.ttsProvider === 'custom_openai')) {
+            opts.provider = 'openai';
             opts.apiUrl = this._customSpeechUrl();
             opts.apiKey = st.customKey || '';
             if (st.customModel) opts.model = st.customModel;
@@ -2340,6 +2342,7 @@ export class StoryVoiceApp {
                 <div class="yzsv-head">
                     <button class="yzsv-back" id="yzsv-back" type="button" aria-label="返回"><i class="fa-solid fa-chevron-left"></i></button>
                     <div class="yzsv-head-title">正文朗读</div>
+                    <button type="button" id="yzsv-open-lib" class="yzsv-mini" style="margin-left:auto;white-space:nowrap">👥 角色库</button>
                 </div>
                 <div class="yzsv-body app-body">
                     <div class="yzsv-hero">
@@ -2351,26 +2354,25 @@ export class StoryVoiceApp {
                     <div class="yzsv-sec">基础</div>
                     <div class="yzsv-card">
                         ${sw('enabled', '启用正文朗读', '正文里对白符号中的台词后面出现 ▶ 和 ↻')}
-                        ${sw('readUser', '也读我的消息', '默认只读角色的回复')}
+                        
                         ${sw('lineEdit', '每句后面显示 🎭', '单句调整演法的按钮；关掉后每句只剩 ▶ ↻，想调时在楼层下面的「逐句调整」或长按 ↻ 里进')}
                     </div>
 
                     <div class="yzsv-sec">语音渠道</div>
                     <div class="yzsv-card pad">
-                        <div class="yzsv-field"><label>正文朗读用哪个渠道</label>
-                            <select class="yzsv-input" data-k="ttsProvider">
-                                ${[...TTS_CHANNELS.map(c => [c.id, c.label])].map(([v, l]) => `<option value="${v}" ${s.ttsProvider === v ? 'selected' : ''}>${l}${v ? this._channelState(v) : ` （现在是 ${esc((TTS_CHANNELS.find(c => c.id === String(this.sv.storage?.get?.('phone-tts-provider') || ''))?.label) || String(this.sv.storage?.get?.('phone-tts-provider') || '未设置'))}）`}</option>`).join('')}
-                            </select>
-                        </div>
-                        ${s.ttsProvider ? `<div class="yzsv-field"><label>每个人用哪个渠道</label>
+                        <div class="yzsv-field"><label>每个人用哪个渠道</label>
                             <div class="yzsv-seg">
-                                <button type="button" data-chmode="per" class="${s.channelMode !== 'unified' ? 'is-on' : ''}">按每个人自己配的</button>
-                                <button type="button" data-chmode="unified" class="${s.channelMode === 'unified' ? 'is-on' : ''}">统一用这个渠道</button>
+                                <button type="button" data-chmode="unified" class="${s.channelMode === 'unified' ? 'is-on' : ''}">统一用一个渠道</button>
+                                <button type="button" data-chmode="per" class="${s.channelMode !== 'unified' ? 'is-on' : ''}">每个人用自己的渠道</button>
                             </div>
-                            <div class="yzsv-note" style="margin-top:6px">按每个人自己配的：谁在角色音色库里填了哪个渠道的音色，就走那个渠道；没单独配的人和 NPC 才用上面这个渠道。<br>统一用这个渠道：所有人都走它；谁没填这个渠道的音色，就用这个渠道的默认音色（不会再报 voice id not exist）。</div>
-                        </div>` : ''}
-                        ${this._channelFields(s)}
-                        <div class="yzsv-note">API Key 只存在你的酒馆设置里。角色音色在「角色音色库」里配，每个人可以给不同渠道各填一个音色 ID。<br>想要情绪标签效果最好：Fish 选 s2.1-pro / s2-pro；MiniMax 选 speech-2.8-hd；OpenAI 选 gpt-4o-mini-tts。</div>
+                        </div>
+                        ${s.channelMode === 'unified' ? `
+                        <div class="yzsv-field"><label>正文朗读用哪个渠道</label>
+                            <select class="yzsv-input" data-k="ttsProvider">${TTS_CHANNELS.map(c => `<option value="${c.id}" ${s.ttsProvider === c.id ? 'selected' : ''}>${c.label}${this._channelState(c.id)}</option>`).join('')}</select>
+                        </div>
+                        ${this._channelFields(s, s.ttsProvider || 'fish')}
+                        ` : `<div class="yzsv-note" style="margin:8px 0">每位角色在右上角「角色库」选择自己的渠道和音色。下方列出全部渠道，可分别填写地址、密钥及模型；配置状态独立保存。</div>
+                        ${TTS_CHANNELS.map(c => `<div class="yzsv-field" style="margin-top:15px"><label style="font-weight:600">${c.label} ${this._channelState(c.id)}</label></div>${this._channelFields(s, c.id)}`).join('')}`}
                     </div>
 
                     <div class="yzsv-sec">情绪分析</div>
@@ -2456,14 +2458,7 @@ export class StoryVoiceApp {
                         <div class="yzsv-field"><label>默认女 NPC 音色</label><input class="yzsv-input" data-k="npcFemale" value="${esc(s.npcFemale)}" placeholder="女性配角、路人用这个"></div>
                         <div class="yzsv-field"><label>默认音色</label><input class="yzsv-input" data-k="voice" value="${esc(s.voice)}" placeholder="分不出男女时用；留空用渠道的默认音色"></div>
                         <div class="yzsv-note" style="margin:-4px 0 12px;">男女怎么判断：模型标的 [[名字/男]]、角色音色库里设的性别；分不出就用默认音色。正文里长按 ↻ 也可以手动指定按男声或女声读。</div>
-                        ${this.sv.standalone ? `<div class="yzsv-field"><label>角色音色</label>
-                            <button type="button" class="yzsv-favbtn" id="yzsv-open-lib" style="margin:0"><span>🎙 角色音色库</span><small>${this.sv.voiceSource?.count?.() || 0} 个角色 · 所有聊天共用</small><i>›</i></button>
-                            <div class="yzsv-note">给每个角色填名字、别名、性别和音色 ID（可以每个渠道各一个），换聊天、换角色卡都还在。识别错了就长按正文里的 ↻ 直接选人。</div>
-                        </div>` : `<div class="yzsv-field"><label>角色音色</label>
-                            <div id="yzsv-spk-list">${spk.map(row).join('')}</div>
-                            <button type="button" class="yzsv-mini is-wide" id="yzsv-spk-add">＋ 添加角色</button>
-                            <div class="yzsv-note">名字写全名或常用称呼都行（家入硝子 / 硝子 会自动对上）。识别错了就长按正文里的 ↻ 直接选人。</div>
-                        </div>`}
+                        ${!this.sv.standalone ? `<div class="yzsv-field"><label>角色音色</label><div id="yzsv-spk-list">${spk.map(row).join('')}</div><button type="button" class="yzsv-mini is-wide" id="yzsv-spk-add">＋ 添加角色</button></div>` : '<div class="yzsv-note">角色音色请到页面右上角「角色库」管理，当前聊天独立保存。</div>'}
                         <div class="yzsv-btns">
                             <button type="button" class="yzsv-mini is-primary" id="yzsv-save">保存</button>
                             <button type="button" class="yzsv-mini" id="yzsv-test">试听</button>
@@ -2614,8 +2609,8 @@ export class StoryVoiceApp {
     }
 
     // 选中渠道下面的地址 / Key / 模型
-    _channelFields(s) {
-        const ch = s.ttsProvider || 'fish';
+    _channelFields(s, channel = null) {
+        const ch = channel || s.ttsProvider || 'fish';
         const eye = '<button type="button" class="yzsv-eye is-hidden" data-eye title="显示 / 隐藏"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="yzsv-eye-slash" d="M4 4l16 16"/></svg></button>';
         const meta = TTS_CHANNELS.find(c => c.id === ch) || { models: [] };
         let url = '', key = '', model = '', placeholder = '';
@@ -2673,7 +2668,7 @@ export class StoryVoiceApp {
         })).filter(x => x.name || x.voice);
         return {
             enabled: on('enabled'),
-            readUser: on('readUser'),
+            readUser: false,
             lineEdit: on('lineEdit'),
             analysisMode: ['simple', 'deep', 'manual'].includes(String(val('analysisMode')?.value)) ? String(val('analysisMode').value) : 'simple',
             ambienceOn: on('ambienceOn'),
@@ -2690,7 +2685,7 @@ export class StoryVoiceApp {
             skips: String(val('skips')?.value || '').trim(),
             voice: String(val('voice')?.value || '').trim(),
             npcMode: String(val('npcMode')?.value || 'only') === 'npc' ? 'npc' : 'only',
-            ttsProvider: String(val('ttsProvider')?.value || ''),
+            ttsProvider: String(val('ttsProvider')?.value || this.sv.getSettings().ttsProvider || 'fish'),
             npcMale: String(val('npcMale')?.value || '').trim(),
             npcFemale: String(val('npcFemale')?.value || '').trim(),
             speakers
@@ -2807,6 +2802,10 @@ export class StoryVoiceApp {
         root.querySelectorAll('[data-chmode]').forEach(b => b.addEventListener('click', () => {
             root.querySelectorAll('[data-chmode]').forEach(x => x.classList.toggle('is-on', x === b));
             this.sv.saveSettings({ channelMode: b.dataset.chmode });
+            const top = root.querySelector('.yzsv-body')?.scrollTop || 0;
+            this.render();
+            const nextBody = this._root().querySelector('.yzsv-body');
+            if (nextBody) nextBody.scrollTop = top;
             toast('已保存', b.dataset.chmode === 'unified' ? '所有人统一用选的渠道' : '每个人按自己配的渠道读');
         }));
         root.querySelectorAll('[data-auto]').forEach(b => b.addEventListener('click', () => {
@@ -2817,7 +2816,7 @@ export class StoryVoiceApp {
             toast('已保存', b.dataset.auto === '1' ? '每轮写完自动分析并生成语音' : '点播放时才分析那一楼');
         }));
         // 渠道的地址 / Key / 模型：第三方存在朗读设置里；小手机已有的渠道直接写回「设置 → 语音」
-        const chanBox = root.querySelector('.yzsv-chan');
+        root.querySelectorAll('.yzsv-chan').forEach(chanBox => {
         const saveChan = () => {
             if (!chanBox) return;
             const ch = chanBox.dataset.chan;
@@ -2888,6 +2887,7 @@ export class StoryVoiceApp {
                 toast('拉取失败', String(err?.message || err).slice(0, 160), '⚠️');
             }
         });
+        }); // 每个渠道各自保存及绑定事件
         root.querySelector('select[data-k="ttsProvider"]')?.addEventListener('change', () => {
             const next = this._collect();
             const prov = next.ttsProvider || String(this.sv.storage?.get?.('phone-tts-provider') || 'minimax_cn');
