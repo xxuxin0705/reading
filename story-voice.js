@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.2.0'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.2.1'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -51,6 +51,9 @@ const DEFAULTS = Object.freeze({
     deepModel: '',
     deepModels: [],
     deepTimeout: 150,
+    deepContext: 3,       // 深度分析时带上前面几楼当前情（只用来理解剧情，不给它们标注）
+    deepInclude: 'content', // 只分析这些标签里的内容（逗号隔开，留空 = 整条消息）
+    deepExclude: '',      // 分析前去掉这些标签整段（比如 <!-- -->、thinking、details）
     deepAuto: false       // true = 每轮写完自动分析并生成语音；false = 点 ▶ / ↻ 时才分析这一楼
 });
 const MARK_RE = /\[\[([^\[\]\n]{1,120})\]\][ \t]*[:：]?[ \t]*/g;
@@ -245,9 +248,11 @@ export class StoryVoice {
     // 深度分析读的正文：先用聊天记录原文（<content> 里的）；原文里找不到台词时
     // （美化卡片、正则替换后的楼层、没有 <content> 的格式），改用页面上实际显示的正文
     _deepText(msg) {
-        const raw = this._rawToText(msg?.mes || '');
-        if (this._hasDialogue(raw)) return raw;
-        return this._domTextOf(msg) || raw;
+        const { text, found } = this._deepRawText(msg?.mes || '');
+        if (this._hasDialogue(text)) return text;
+        // 设置了「只分析」的标签而且找到了：就只看它，不去页面上找（页面上可能有被排除的东西）
+        if (found && this._tagList(this.getSettings().deepInclude).length) return text;
+        return this._domTextOf(msg) || text;
     }
 
     _hasDialogue(text = '') {
@@ -341,8 +346,9 @@ export class StoryVoice {
             const speakers = {};
             items.forEach(it => { if (it.r.marked && it.r.speaker) speakers[it.id] = it.r.speaker; });
             const roster = [...new Set([...s.speakers.map(x => x.name), ...this._wechatVoiceNames(), String(ctx?.name2 || '').trim(), String(ctx?.name1 || '').trim()].filter(Boolean))];
-            const prev = (ctx?.chat || []).slice(Math.max(0, id - 3), id).filter(m => m && !m.is_system)
-                .map(m => ({ n: m.name || '', t: clean(this._rawToText(m.mes || '')).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() })).filter(x => x.t).map(x => `【${x.n}】\n${x.t}`).join('\n\n');
+            const nPrev = Math.min(10, Math.max(0, Number(s.deepContext ?? 3) || 0));
+            const prev = (nPrev ? (ctx?.chat || []).slice(Math.max(0, id - nPrev), id) : []).filter(m => m && !m.is_system)
+                .map(m => ({ n: m.name || '', t: clean(this._deepRawText(m.mes || '').text).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() })).filter(x => x.t).map(x => `【${x.n}】\n${x.t}`).join('\n\n');
             // 每个人用的语音引擎不同（每人用自己的渠道时）：告诉模型按引擎能认的写法标
             let engines = null;
             try {
@@ -595,6 +601,9 @@ export class StoryVoice {
         s.emotionCue = s.analysisMode === 'simple';    // 语气只有简单分析需要正文模型写
         s.lineEdit = s.lineEdit !== false;
         s.entryMode = ['wand', 'float', 'both'].includes(s.entryMode) ? s.entryMode : 'wand';
+        s.deepContext = Math.min(10, Math.max(0, Math.round(Number(s.deepContext ?? 3)) || 0));
+        s.deepInclude = String(s.deepInclude ?? 'content');
+        s.deepExclude = String(s.deepExclude ?? '');
         s.channelMode = s.channelMode === 'unified' ? 'unified' : 'per';
         s.readUser = false;
         s.deepPresets = Array.isArray(s.deepPresets) ? s.deepPresets.filter(x => x && x.id) : [];
@@ -1411,18 +1420,56 @@ export class StoryVoice {
     }
 
     // 原文（可能带思考、<content> 标签和 HTML）→ 纯文字；生成到一半也能用
-    _rawToText(raw) {
+    // 「content, 正文」「<!-- -->, thinking」→ 标签名列表；注释写成 <!-- --> / <!-- / !--
+    _tagList(v = '') {
+        return [...new Set(String(v || '').split(/[,，、;；\s]+/).map(x => x.trim()).filter(Boolean).map(x => {
+            if (/^<?!--/.test(x) || x === '-->') return '!--';
+            return x.replace(/^<\/?/, '').replace(/\/?>$/, '').trim();
+        }).filter(Boolean))];
+    }
+
+    // 去掉这些标签整段（含没闭合的结尾）
+    _dropTags(t, tags = []) {
+        let out = String(t || '');
+        tags.forEach(tag => {
+            if (tag === '!--') { out = out.replace(/<!--[\s\S]*?-->/g, '').replace(/<!--[\s\S]*$/, ''); return; }
+            const n = reEsc(tag);
+            out = out.replace(new RegExp(`<${n}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${n}\\s*>`, 'gi'), '');
+            out = out.replace(new RegExp(`<${n}(?:\\s[^>]*)?>(?![\\s\\S]*<\\/${n}\\s*>)[\\s\\S]*$`, 'i'), '');
+        });
+        return out;
+    }
+
+    // 只取这些标签里的内容（同名多段按顺序接起来；还没闭合的取到结尾）；一个都没找到返回 null
+    _pickTags(t, tags = []) {
+        const src = String(t || '');
+        const parts = [];
+        tags.filter(x => x !== '!--').forEach(tag => {
+            const n = reEsc(tag);
+            const re = new RegExp(`<${n}(?:\\s[^>]*)?>([\\s\\S]*?)(?:<\\/${n}\\s*>|$)`, 'gi');
+            for (const m of src.matchAll(re)) parts.push({ at: m.index, text: m[1] });
+        });
+        if (!parts.length) return null;
+        return parts.sort((a, b) => a.at - b.at).map(x => x.text).join('\n');
+    }
+
+    // 深度分析用的正文：按设置里的「只分析 / 排除」标签取
+    _deepRawText(raw) {
+        const s = this.getSettings();
+        const inc = this._tagList(s.deepInclude);
+        const exc = this._tagList(s.deepExclude);
+        let t = this._dropTags(String(raw || ''), exc);
+        const picked = inc.length ? this._pickTags(t, inc) : t;
+        return { text: this._rawToText(this._dropTags(picked ?? t, exc), { include: [] }), found: picked !== null };
+    }
+
+    _rawToText(raw, { include = ['content'] } = {}) {
         let t = String(raw || '');
         // 思考过程不读也不发：<think>、<thinking>、<reasoning>、<cot>、<思考>、<思维链> 等（没写完的也去掉）
         const TH = '(?:think|thinking|reasoning|cot|thought|thoughts|思考|思维链|思维|内心分析)';
         t = t.replace(new RegExp(`<${TH}>[\\s\\S]*?<\\/${TH}>`, 'gi'), '').replace(new RegExp(`<${TH}>[\\s\\S]*$`, 'i'), '');
         t = t.replace(/^[\s\S]*?<\/think(?:ing)?>/i, ''); // 只有结尾 </think> 的（开头标签被预设吃掉了）
-        const open = t.search(/<content>/i);
-        if (open >= 0) {
-            t = t.slice(open + 9);
-            const close = t.search(/<\/content>/i);
-            if (close >= 0) t = t.slice(0, close);
-        }
+        if (include.length) { const picked = this._pickTags(t, include); if (picked !== null) t = picked; }
         return t.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|blockquote|h[1-6])>/gi, '\n').replace(/<[^>]*>?/g, '')
             .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
             .replace(/\*+/g, '');
@@ -2773,6 +2820,15 @@ export class StoryVoiceApp {
                             <input type="hidden" data-k="deepAuto" value="${s.deepAuto ? '1' : '0'}">
                         </div>
                         <div class="yzsv-note" style="margin:-4px 0 12px;">点播放时才分析：每楼照常先挂 ▶ 和 ↻，点了哪一楼才调用副 API 分析那一楼，分析完生成语音、弹出提示并开始播放，不点就不花钱。<br>每轮自动分析：每次回复写完就自动分析并提前生成语音，点 ▶ 马上能听，但每轮都会调用一次副 API。</div>
+                        <div class="yzsv-sec" style="margin:14px 0 8px">分析哪些内容</div>
+                        <div class="yzsv-field"><label>带上前面几楼当前情</label><input class="yzsv-input" data-k="deepContext" type="number" min="0" max="10" value="${esc(s.deepContext)}">
+                            <div class="yzsv-note">0~10。前面这几楼只用来让模型读懂前因后果，不会给它们标注；楼数越多越准，也越费 token。</div></div>
+                        <div class="yzsv-field"><label>只分析这些标签里的内容</label><input class="yzsv-input" data-k="deepInclude" value="${esc(s.deepInclude)}" placeholder="例：content, 正文（留空 = 整条消息）" spellcheck="false">
+                            <div class="yzsv-note">写标签名就行，逗号隔开：写 content 就只取 &lt;content&gt;…&lt;/content&gt; 里的。这一楼里找不到这些标签时，按整条消息分析。</div></div>
+                        <div class="yzsv-field"><label>排除这些标签</label><input class="yzsv-input" data-k="deepExclude" value="${esc(s.deepExclude)}" placeholder="例：<!-- -->, thinking, details, status" spellcheck="false">
+                            <div class="yzsv-note">这些标签整段去掉再分析（取出来的内容里也去掉）。注释写 &lt;!-- --&gt;。思考过程（think、thinking 等）本来就会去掉。</div></div>
+                        <div class="yzsv-btns" style="grid-template-columns:1fr;margin:0 0 6px"><button type="button" class="yzsv-mini" id="yzsv-deep-preview">看看最新一楼会分析哪些内容</button></div>
+                        <div class="yzsv-note" id="yzsv-deep-preview-out" hidden style="white-space:pre-wrap;background:#f8f8fb;border-radius:10px;padding:8px 10px;max-height:240px;overflow:auto;color:#555"></div>
                         <div class="yzsv-row" data-go="api" style="padding:8px 0 0;border:0"><span>深度分析用的连接<small>${esc(this._deepConnLabel(s))}</small></span><button type="button" class="yzr-link">去 API 设置改 ›</button></div>
                         </div>
                     </div>
@@ -3005,6 +3061,9 @@ export class StoryVoiceApp {
             deepModels: cur.deepModels,
             deepAuto: val('deepAuto') ? String(val('deepAuto').value || '0') === '1' : !!cur.deepAuto,
             deepTimeout: num('deepTimeout', 30, 600, 150),
+            deepContext: val('deepContext') ? Math.min(10, Math.max(0, Math.round(Number(val('deepContext').value) || 0))) : cur.deepContext,
+            deepInclude: val('deepInclude') ? String(val('deepInclude').value || '').trim() : cur.deepInclude,
+            deepExclude: val('deepExclude') ? String(val('deepExclude').value || '').trim() : cur.deepExclude,
             quotes: val('quotes') ? (str('quotes') || DEFAULTS.quotes) : cur.quotes,
             skips: str('skips') || '',
             voice: str('voice') || '',
@@ -3081,6 +3140,20 @@ export class StoryVoiceApp {
             if (nb) nb.scrollTop = 0;
         }));
         root.querySelector('#yzsv-sub-back')?.addEventListener('click', () => this.render('main'));
+        root.querySelector('#yzsv-deep-preview')?.addEventListener('click', () => {
+            this.sv.saveSettings(this._collect());
+            const out = root.querySelector('#yzsv-deep-preview-out');
+            const chat = window.SillyTavern?.getContext?.()?.chat || [];
+            let id = chat.length - 1;
+            while (id >= 0 && (chat[id]?.is_user || chat[id]?.is_system)) id -= 1;
+            out.hidden = false;
+            if (id < 0) { out.textContent = '现在没有打开聊天，或者还没有 AI 的回复。'; return; }
+            const msg = chat[id];
+            const text = this.sv._deepText(msg);
+            const { lines } = this.sv._analyze(text, { id, msg, useMemo: false });
+            const n = this.sv.getSettings().deepContext;
+            out.textContent = `第 ${id} 楼：找到 ${lines.length} 句台词${lines.length ? '' : '（找不到就不会调用分析模型）'}，另外带上前面 ${n} 楼当前情。\n—— 会分析的正文 ——\n${text.trim().slice(0, 1200)}${text.trim().length > 1200 ? '\n……（后面省略）' : ''}`;
+        });
         root.querySelectorAll('[data-entry]').forEach(b => b.addEventListener('click', () => {
             root.querySelectorAll('[data-entry]').forEach(x => x.classList.toggle('is-on', x === b));
             this.sv.saveSettings({ entryMode: b.dataset.entry });
