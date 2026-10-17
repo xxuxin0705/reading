@@ -89,7 +89,7 @@ export class VoiceLibrary {
             ttsVoices: x.voices || {},
             ttsProvider: x.provider || '',
             ttsLanguageBoost: x.lang || 'auto',
-            gender: x.gender === 'm' ? 'male' : x.gender === 'f' ? 'female' : '',
+            gender: (x.isNpc ?? !!x.gender) ? (x.gender === 'm' ? 'male' : x.gender === 'f' ? 'female' : '') : '',
             nameReadings: x.readings || []
         };
     }
@@ -98,7 +98,7 @@ export class VoiceLibrary {
 
     getContactGender(id) {
         const x = this.list().find(e => e.id === id);
-        return x?.gender === 'm' ? 'male' : x?.gender === 'f' ? 'female' : '';
+        return (x?.isNpc ?? !!x?.gender) ? (x?.gender === 'm' ? 'male' : x?.gender === 'f' ? 'female' : '') : '';
     }
 
     get data() {
@@ -131,7 +131,7 @@ export function renderLibrary(app, lib, { editId = null } = {}) {
                 ${all.length ? '' : '<div class="yzsv-note" style="text-align:center;padding:30px 10px;">还没有角色<br>点「添加角色」，填名字和音色 ID 就能用；名字和正文里 [[名字]] 标的对上就会用这个音色。</div>'}
                 ${all.map(x => `
                     <div class="yzsv-fav yzr-lib-item" data-id="${esc(x.id)}">
-                        <div class="yzsv-fav-top"><b>${esc(x.name)}</b>${x.isUser ? '<span class="yzr-badge">我</span>' : ''}${x.gender ? `<span>${x.gender === 'm' ? '男' : '女'}</span>` : ''}<span>当前聊天</span></div>
+                        <div class="yzsv-fav-top"><b>${esc(x.name)}</b>${x.isUser ? '<span class="yzr-badge">我</span>' : ''}${(x.isNpc ?? !!x.gender) ? `<span>NPC${x.gender ? ` · ${x.gender === 'm' ? '男' : '女'}` : ''}</span>` : ''}<span>当前聊天</span></div>
                         ${(x.aliases || []).length ? `<div class="yzsv-fav-text" style="font-size:12.5px;color:#888">别名：${esc(x.aliases.join('、'))}</div>` : ''}
                         <div class="yzsv-fav-text" style="font-size:12.5px;color:#6b54a8">🎙 ${esc(voiceSummary(x))}</div>
                         <div class="yzsv-fav-acts"><button type="button" data-lib-edit>编辑</button><button type="button" data-lib-test>▶ 试听</button><button type="button" class="danger" data-lib-del>删除</button></div>
@@ -171,7 +171,7 @@ export function renderLibrary(app, lib, { editId = null } = {}) {
 
 function editEntry(app, lib, x, preset = {}) {
     const root = app.phoneShell.rootEl;
-    const e = x ? JSON.parse(JSON.stringify(x)) : { id: `v_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name: '', aliases: [], gender: '', voices: {}, provider: '', readings: [], isUser: false, chatKey: currentChatKey(), cardKey: '', ...preset };
+    const e = x ? JSON.parse(JSON.stringify(x)) : { id: `v_${Date.now()}_${Math.random().toString(36).slice(2,7)}`, name: '', aliases: [], gender: '', isNpc: false, voices: {}, provider: '', readings: [], isUser: false, chatKey: currentChatKey(), cardKey: '', ...preset };
     const key = currentChatKey();
     const readRow = (r = {}) => `<div class="yzrd-row"><input class="yzsv-input" data-rd="text" placeholder="写法" value="${esc(r.text || '')}"><i>读作</i><input class="yzsv-input" data-rd="reading" placeholder="读音（假名）" value="${esc(r.reading || '')}"><button type="button" class="yzrd-del">×</button></div>`;
     const html = `
@@ -182,19 +182,20 @@ function editEntry(app, lib, x, preset = {}) {
             </div>
             <div class="yzsv-body app-body">
                 <div class="yzsv-card pad">
-                    <div class="yzsv-field"><label>名字（和正文 [[名字]] 标的一样）</label><input class="yzsv-input" data-f="name" value="${esc(e.name)}" placeholder="例如 家入硝子"></div>
-                    <div class="yzsv-field"><label>别名（逗号隔开，昵称、姓、称呼都行）</label><input class="yzsv-input" data-f="aliases" value="${esc((e.aliases || []).join('，'))}" placeholder="例如 硝子，家入"></div>
-                    <div class="yzsv-field"><label>性别（用来选 NPC 音色）</label>
+                    <div class="yzsv-field"><label>名字（和正文 [[名字]] 标的一样）</label><input class="yzsv-input" data-f="name" value="${esc(e.name)}" placeholder="填写角色名称"></div>
+                    <div class="yzsv-field"><label>别名（逗号隔开，昵称、姓、称呼都行）</label><input class="yzsv-input" data-f="aliases" value="${esc((e.aliases || []).join('，'))}" placeholder="填写其他称呼，多个用逗号隔开"></div>
+                    <div class="yzsv-row" data-npc-row style="padding:4px 0 12px"><span>这是 NPC<small>开启后可以选择性别，用于匹配 NPC 音色</small></span><span class="yzsv-switch${(e.isNpc ?? !!e.gender) ? ' is-on' : ''}" data-f="isNpc"><i></i></span></div>
+                    <div class="yzsv-field" data-npc-gender style="${(e.isNpc ?? !!e.gender) ? '' : 'display:none;'}"><label>NPC 性别</label>
                         <div class="yzsv-seg">${[['', '不设'], ['m', '男'], ['f', '女']].map(([v, l]) => `<button type="button" data-g="${v}" class="${(e.gender || '') === v ? 'is-on' : ''}">${l}</button>`).join('')}</div>
                     </div>
                     <div class="yzsv-row" data-sw-row style="padding:4px 0 12px"><span>这是我（用户）<small>你自己的台词用这个音色；酒馆里的用户名会自动当成别名</small></span><span class="yzsv-switch${e.isUser ? ' is-on' : ''}" data-f="isUser"><i></i></span></div>
                     <div class="yzsv-note">此角色及音色配置只属于当前聊天，其他聊天不会受影响。</div>
                     <div class="yzsv-note">朗读设置里「每个人用哪个渠道」选「按每个人自己配的」时：这个人填了当前渠道的音色就用它，没填就用他填过的别的渠道。选「统一用这个渠道」时只看当前渠道那一栏。</div>
                 </div>
-                <div class="yzsv-sec">名字读音（可选）</div>
+                <div class="yzsv-sec">名字读音（可选，适配日文读音）</div>
                 <div class="yzsv-card pad">
                     <div class="yzrd" id="yzr-rd">${(e.readings || []).map(readRow).join('')}<button type="button" class="yzrd-add">＋ 添加读音</button></div>
-                    <div class="yzsv-note">日文台词里汉字名字读错时用，例如 悟 → さとる。</div>
+                    <div class="yzsv-note">当日文朗读中的汉字姓名发音不准确时，可在这里指定对应的假名读音。</div>
                 </div>
                 <div class="yzsv-btns" style="margin:12px 0 30px"><button type="button" class="yzsv-mini is-primary" id="yzr-ed-save">保存</button></div>
             </div>
@@ -205,6 +206,16 @@ function editEntry(app, lib, x, preset = {}) {
     root.querySelector('#yzr-ed-back')?.addEventListener('click', () => renderLibrary(app, lib));
     root.querySelectorAll('[data-g]').forEach(b => b.addEventListener('click', () => { root.querySelectorAll('[data-g]').forEach(y => y.classList.toggle('is-on', y === b)); e.gender = b.dataset.g; }));
 
+    root.querySelector('[data-npc-row]')?.addEventListener('click', () => {
+        const sw = root.querySelector('.yzsv-switch[data-f="isNpc"]');
+        sw.classList.toggle('is-on');
+        e.isNpc = sw.classList.contains('is-on');
+        root.querySelector('[data-npc-gender]').style.display = e.isNpc ? '' : 'none';
+        if (!e.isNpc) {
+            e.gender = '';
+            root.querySelectorAll('[data-g]').forEach(b => b.classList.toggle('is-on', b.dataset.g === ''));
+        }
+    });
     root.querySelector('[data-sw-row]')?.addEventListener('click', () => { const sw = root.querySelector('.yzsv-switch[data-f="isUser"]'); sw.classList.toggle('is-on'); e.isUser = sw.classList.contains('is-on'); });
     const rd = root.querySelector('#yzr-rd');
     rd?.addEventListener('click', (ev) => {
@@ -216,6 +227,8 @@ function editEntry(app, lib, x, preset = {}) {
         e.name = String(root.querySelector('[data-f="name"]').value || '').trim();
         if (!e.name) { toast('还没填名字', '名字要和正文里标的说话人一样'); return; }
         e.aliases = splitList(root.querySelector('[data-f="aliases"]').value).filter(a => a !== e.name);
+        e.isNpc = !!(e.isNpc ?? !!e.gender);
+        if (!e.isNpc) e.gender = '';
         e.voices = {};
         root.querySelectorAll('[data-voice]').forEach(inp => { const v = String(inp.value || '').trim(); if (v) e.voices[inp.dataset.voice] = v; });
         e.provider = root.querySelector('[data-f="provider"]').value;
