@@ -32,7 +32,27 @@ const storage = {
 let overlay = null;
 const shell = {
     rootEl: null,
-    setContent(html) { if (this.rootEl) this.rootEl.innerHTML = html; },
+    setContent(html) {
+        if (!this.rootEl) return;
+        this.rootEl.innerHTML = html;
+        const head = this.rootEl.querySelector('.yzsv-head');
+        if (!head) return;
+        // 每个子页面共用同一个关闭入口，直接关闭弹窗而非返回上一页。
+        head.style.position = 'relative';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'yzsv-back yzr-close-panel';
+        btn.setAttribute('aria-label', '关闭正文朗读');
+        btn.title = '关闭';
+        btn.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+        btn.style.cssText = 'position:absolute;right:10px;top:32px;display:flex;align-items:center;justify-content:center;z-index:2;';
+        btn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            closePanel();
+        });
+        head.appendChild(btn);
+    },
     showNotification(title, msg) { try { window.toastr?.info?.(msg || '', title || ''); } catch (e) { /* 忽略 */ } },
     goHome() { closePanel(); },
     openLibrary(app) { renderLibrary(app, library); }
