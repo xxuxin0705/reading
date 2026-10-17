@@ -8,7 +8,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, DEEP_SCHEMA, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.2.8'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.2.9'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -596,10 +596,31 @@ export class StoryVoice {
         return map;
     }
 
+    // 同一句台词在原文和页面上可能差几个空格、省略号写法、引号：比较时统一一下
+    _normLine(x) {
+        return String(x || '').replace(/\s+/g, '').replace(/\.{3,}|…+|‥+/g, '…').replace(/[“”"「」『』]/g, '').replace(/[！!]/g, '!').replace(/[？?]/g, '?');
+    }
+
+    // 这一楼允许读的台词（按「只读这些标签 / 排除这些标签」从聊天记录原文取）；
+    // 原文里一句台词都取不到（美化卡片、没标签的格式）时返回 null = 不限制，按页面上的来
+    _allowedLines(msg) {
+        const raw = String(msg?.mes || '');
+        if (!raw) return null;
+        const { text, found } = this._deepRawText(raw);
+        let lines = this._analyze(text, { msg, useMemo: false }).lines;
+        // 指定的标签里没有台词（台词写在别的标签里、美化卡片）：退回整条消息（照样去掉思考过程和排除的标签）
+        if (!lines.length && found) {
+            const whole = this._rawToText(this._dropTags(raw, this._tagList(this.getSettings().deepExclude)), { include: [] });
+            lines = this._analyze(whole, { msg, useMemo: false }).lines;
+        }
+        if (!lines.length) return null;
+        return new Set(lines.map(r => this._normLine(r.text)));
+    }
+
     _deepFor(entry, text) {
         let v = entry?.lines?.[text];
         if (!v && entry?.lines) {
-            const norm = (x) => String(x || '').replace(/\s+/g, '').replace(/\.{3,}|…+|‥+/g, '…').replace(/[“”"「」『』]/g, '').replace(/[！!]/g, '!').replace(/[？?]/g, '?');
+            const norm = (x) => this._normLine(x);
             const k = norm(text);
             const hit = Object.keys(entry.lines).find(x => norm(x) === k);
             if (hit) v = entry.lines[hit];
@@ -1190,7 +1211,10 @@ export class StoryVoice {
             } catch (e) { hints = null; }
         }
         const { marks, lines: found } = this._analyze(full, { id, msg, hints, cueHints });
-        let lines = found;
+        // 只给允许读的部分（默认 <content> 里、去掉思考过程和排除的标签）里的台词挂按钮：
+        // 预设把思维链也显示在正文里时，那里面的引号不会被当成台词
+        const allowed = this._allowedLines(msg);
+        let lines = allowed ? found.filter(r => allowed.has(this._normLine(r.text))) : found;
         // 深度分析：说话人没标出来时用分析结果；每句挂上分析出的演法
         const deepOn = s.analysisMode === 'deep' && !live;
         const deepEntry = deepOn ? this._deepEntry(msg) : null;
@@ -2743,6 +2767,14 @@ export class StoryVoiceApp {
                         <div class="yzsv-note">成对写，逗号分隔；开合各一个字符写在一起（「」），多字符或相同字符中间空一格（** **）。台词在引号里、译文在括号里：对白填 “”，跳过填 （）。</div>
                     </div>
 
+                    <div class="yzsv-sec">朗读哪些内容</div>
+                    <div class="yzsv-card pad">
+                        <div class="yzsv-field"><label>只读这些标签里的台词</label><input class="yzsv-input" data-k="deepInclude" value="${esc(s.deepInclude)}" placeholder="例：content, 正文（留空 = 整条消息）" spellcheck="false">
+                            <div class="yzsv-note">写标签名，中英文逗号、顿号、空格隔开都行：写 content 就只有 &lt;content&gt;…&lt;/content&gt; 里的台词挂 ▶。这一楼里找不到这些标签时，按整条消息。</div></div>
+                        <div class="yzsv-field"><label>排除这些标签</label><input class="yzsv-input" data-k="deepExclude" value="${esc(s.deepExclude)}" placeholder="例：<!-- -->, thinking, details, status" spellcheck="false">
+                            <div class="yzsv-note">这些标签整段不读（取出来的内容里也去掉）。注释写 &lt;!-- --&gt;。思考过程（think、thinking 等）本来就不读。三种模式通用，深度分析也按这个取正文。</div></div>
+                    </div>
+
                     ${!this.sv.standalone ? `<div class="yzsv-sec">角色音色</div><div class="yzsv-card pad"><div class="yzsv-field"><div id="yzsv-spk-list">${spk.map(row).join('')}</div><button type="button" class="yzsv-mini is-wide" id="yzsv-spk-add">＋ 添加角色</button></div></div>` : ''}
                     <div class="yzsv-btns">
                         <button type="button" class="yzsv-mini is-primary" id="yzsv-save">保存</button>
@@ -2858,10 +2890,7 @@ export class StoryVoiceApp {
                         <div class="yzsv-sec" style="margin:14px 0 8px">分析哪些内容</div>
                         <div class="yzsv-field"><label>带上前面几楼当前情</label><input class="yzsv-input" data-k="deepContext" type="number" min="0" max="10" value="${esc(s.deepContext)}">
                             <div class="yzsv-note">0~10。前面这几楼只用来让模型读懂前因后果，不会给它们标注；楼数越多越准，也越费 token。</div></div>
-                        <div class="yzsv-field"><label>只分析这些标签里的内容</label><input class="yzsv-input" data-k="deepInclude" value="${esc(s.deepInclude)}" placeholder="例：content, 正文（留空 = 整条消息）" spellcheck="false">
-                            <div class="yzsv-note">写标签名就行，逗号隔开：写 content 就只取 &lt;content&gt;…&lt;/content&gt; 里的。这一楼里找不到这些标签时，按整条消息分析。</div></div>
-                        <div class="yzsv-field"><label>排除这些标签</label><input class="yzsv-input" data-k="deepExclude" value="${esc(s.deepExclude)}" placeholder="例：<!-- -->, thinking, details, status" spellcheck="false">
-                            <div class="yzsv-note">这些标签整段去掉再分析（取出来的内容里也去掉）。注释写 &lt;!-- --&gt;。思考过程（think、thinking 等）本来就会去掉。</div></div>
+                        <div class="yzsv-note" style="margin:-4px 0 12px">读哪些标签里的内容、排除哪些标签，在首页「朗读哪些内容」里设（三种模式通用，分析也按它取）。</div>
                         <div class="yzsv-btns" style="grid-template-columns:1fr;margin:0 0 6px"><button type="button" class="yzsv-mini" id="yzsv-deep-preview">看看最新一楼会分析哪些内容</button></div>
                         <div class="yzsv-note yzsv-scrollbox" id="yzsv-deep-preview-out" hidden style="white-space:pre-wrap;word-break:break-all;background:#f8f8fb;border-radius:10px;padding:8px 10px;max-height:46vh;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y;color:#555"></div>
                         <div class="yzsv-row" data-go="api" style="padding:8px 0 0;border:0"><span>深度分析用的连接<small>${esc(this._deepConnLabel(s))}</small></span><button type="button" class="yzr-link">去 API 设置改 ›</button></div>
