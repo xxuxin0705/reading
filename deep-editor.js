@@ -218,6 +218,8 @@ function injectStyle() {
 .yzsv-ed-raw summary::-webkit-details-marker { display: none; }
 .yzsv-ed-raw summary::before { content: '▸'; font-size: 11px; }
 .yzsv-ed-raw[open] summary::before { content: '▾'; }
+.yzsv-ed-fail summary { color: #c0504a; }
+.yzsv-ed-failmsg { font-size: 12.5px; color: #c0504a; margin: 4px 0 6px; line-height: 1.5; }
 .yzsv-ed-copyraw { margin-left: auto; border: 0; border-radius: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer; font-family: inherit; background: #f1eefa; color: #6b54a8; }
 .yzsv-ed-raw pre { margin: 6px 0 0; max-height: 34vh; overflow: auto; overscroll-behavior: contain; white-space: pre-wrap; word-break: break-all; background: #f4f6fb; border-radius: 9px; padding: 8px; color: #445; font-size: 11.5px; }
 .yzsv-ed-tiprow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
@@ -265,6 +267,10 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
     if (!entry) entry = { at: Date.now(), tone: '', arc: '', lines: {}, manualOnly: true };
     entry.lines = entry.lines || {};
     const analyzed = !entry.manualOnly;
+    // 最近一次失败（比上次成功的新才显示）
+    const failRec = sv._deepFail?.get?.(sv._deepHashOf(msg));
+    const fail = failRec && (!analyzed || failRec.at > (entry.at || 0)) ? failRec : null;
+    const hm = (t) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
     let bars = Array.from(document.querySelectorAll(`#chat .mes[mesid="${mesid}"] .mes_text .yzsv-bar`));
     if (single && focusLine !== null) bars = bars.filter(b => String(b.dataset.line) === String(focusLine));
     if (!bars.length) { sv._toast('没有可编辑的台词', '这一楼没有找到挂了按钮的台词'); return; }
@@ -337,7 +343,8 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
                 <div class="yzsv-ed-amb">🌧 这一楼开头的环境声<select class="yzsv-ed-ambsel">${Object.entries(AMBIENCE_LABELS).map(([k, l]) => `<option value="${k}" ${k === (entry.ambience || 'none') ? 'selected' : ''}>${l}</option>`).join('')}</select><button type="button" class="yzsv-ed-ambtry" style="border:0;background:#f1f1f5;border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;">试听</button></div>
                 <div class="yzsv-ed-tiprow"><button type="button" class="yzsv-ed-tiptog">说明 收起 ▴</button><span class="grow"></span>${bars.length > 1 ? '<button type="button" class="yzsv-ed-foldall" data-fold="1">全部收起 ▴</button>' : ''}</div>
                 <div class="yzsv-ed-tip">张力 1 平静 → 5 爆发，越高情绪越强；语速在播放时直接变快变慢（不用重新生成）。每句上面写了这个人用的渠道和它认什么：不同渠道下面能选的选项不一样，虚线框里是实际会发过去的内容。演法里 [方括号] 是声音标签，放在要生效的字前面，可以点下面的按钮插入，也可以自己写 [crying softly] 这类英文描述；可以加叠字（我、我不是）、……、！！、呜。点「生成一版试听」只调用语音接口生成这一句（不会调用分析模型），可以反复生成、来回对比，保存时只留选中的那版。</div>
-                ${analyzed && entry.raw ? `<details class="yzsv-ed-raw"><summary>🧾 看模型的原始回复<button type="button" class="yzsv-ed-copyraw" title="复制模型的原始回复">复制</button></summary><pre class="yzsv-scrollbox">${esc(entry.raw)}</pre></details>` : ''}
+                ${fail ? `<details class="yzsv-ed-raw yzsv-ed-fail" open><summary>❌ 最近一次分析失败（${hm(fail.at)}）<button type="button" class="yzsv-ed-copyraw" data-which="fail" title="复制失败详情">复制</button></summary><div class="yzsv-ed-failmsg">${esc(fail.err)}</div><pre class="yzsv-scrollbox">${esc(fail.raw)}</pre></details>` : ''}
+                ${analyzed && entry.raw ? `<details class="yzsv-ed-raw"><summary>🧾 ${fail ? '上次成功的' : '看模型的'}原始回复${entry.at ? `（${hm(entry.at)}）` : ''}<button type="button" class="yzsv-ed-copyraw" title="复制模型的原始回复">复制</button></summary><pre class="yzsv-scrollbox">${esc(entry.raw)}</pre></details>` : ''}
             </div>
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
             <div class="yzsv-ed-foot"><button type="button" class="ghost yzsv-ed-cancel">关闭</button><button type="button" class="primary yzsv-ed-save">${single ? '保存' : '保存全部'}</button></div>
@@ -612,7 +619,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         const copyBtn = e.target.closest('.yzsv-ed-copyraw');
         if (copyBtn) {
             e.preventDefault(); // 别顺带把折叠框开 / 关
-            const text = entry.raw || '';
+            const text = copyBtn.dataset.which === 'fail' ? `${fail?.err || ''}\n\n${fail?.raw || ''}` : (entry.raw || '');
             const done = () => { copyBtn.textContent = '已复制 ✓'; setTimeout(() => { copyBtn.textContent = '复制'; }, 1500); };
             const fallback = () => {
                 const ta = document.createElement('textarea');

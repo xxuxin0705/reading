@@ -52,6 +52,7 @@ const DEFAULTS = Object.freeze({
     deepModel: '',
     deepModels: [],
     deepTimeout: 150,
+    deepThink: false,     // 自定义 API：让模型先思考（DeepSeek Pro / R 系列等）。关 = 更快，中转站不容易断
     deepContext: 3,       // 深度分析时带上前面几楼当前情（只用来理解剧情，不给它们标注）
     deepInclude: 'content', // 只分析这些标签里的内容（逗号隔开，留空 = 整条消息）
     deepExclude: '',      // 分析前去掉这些标签整段（比如 <!-- -->、thinking、details）
@@ -204,6 +205,7 @@ export class StoryVoice {
         this._deepErr = new Map();
         this._deepAborts = new Map(); // 正在分析的楼层：hash → AbortController（再点一下 / 取消 用）
         this._deepProgress = new Map(); // 正在分析的楼层收到了多少字
+        this._deepFail = new Map(); // 最近一次失败：hash → { at, err, raw }（「查看 / 编辑」里能看）
     }
 
     // ---------- 深度分析 ----------
@@ -353,6 +355,7 @@ export class StoryVoice {
         this._deepAborts.set(hash, ctl);
         this._deepProgress.delete(hash);
         const onProgress = (p) => this._showDeepProgress(id, hash, p);
+        const dbg = { raw: '' };
         const job = (async () => {
             await this._getWechatData().catch(() => null);
             const full = this._deepText(msg);
@@ -381,6 +384,7 @@ export class StoryVoice {
             // Gemini 2.5 Pro 这类会思考的模型：思考也算在输出长度里，给够长度；回答没法读就再要一次
             const timeout = (Number(s.deepTimeout) || 150) * 1000;
             let raw = await this._callModel(messages, { timeout, maxTokens: 16000, jsonSchema: DEEP_SCHEMA, signal: ctl.signal, onProgress });
+            dbg.raw = String(raw || '');
             let parsed = parseDeep(raw, items);
             if (parsed && !parsed.useful && !parsed.tone) parsed = null; // 读出来是空的（没有情绪、没有标注）：当成没读懂，再要一次
             if (!parsed) {
@@ -388,6 +392,7 @@ export class StoryVoice {
                 const again = [...messages, { role: 'assistant', content: String(raw || '').slice(0, 400) }, { role: 'user', content: '上面的回答不是要求的格式。只输出一个 JSON 对象（以 { 开头、以 } 结尾），不要思考过程、不要解释、不要代码块。' }];
                 this._deepProgress.delete(hash);
                 raw = await this._callModel(again, { timeout, maxTokens: 16000, jsonSchema: DEEP_SCHEMA, signal: ctl.signal, onProgress });
+                dbg.raw = String(raw || '');
                 parsed = parseDeep(raw, items);
                 if (parsed && !parsed.useful && !parsed.tone) {
                     console.warn('[正文朗读] 深度分析的回答里没有可用的内容：', raw);
@@ -418,6 +423,7 @@ export class StoryVoice {
             });
             this._deepSave(hash, out);
             this._deepErr.delete(hash);
+            this._deepFail.delete(hash);
             return out;
         })();
         this._deepJobs.set(hash, job);
@@ -428,6 +434,8 @@ export class StoryVoice {
                 return;
             }
             console.warn('[正文朗读] 深度分析失败:', err);
+            this._deepFail.set(hash, { at: Date.now(), err: String(err?.message || err), raw: String(err?.debug || dbg.raw || '（这次没收到任何内容）').slice(0, 20000) });
+            if (this._deepFail.size > 30) this._deepFail.delete(this._deepFail.keys().next().value);
             this._deepErr.set(hash, String(err?.message || err).slice(0, 120));
             this._toast('深度分析失败', `${String(err?.message || err).slice(0, 120)}（这一楼先按不分析读）`, 'error');
         }).finally(() => {
@@ -521,6 +529,7 @@ export class StoryVoice {
         });
         try { return String(await Promise.race([run, limit, cancelled]) || ''); }
         catch (e) {
+            if (e?.timeout && !e.debug) e.debug = `超时前收到：思考 ${sink.think || 0} 字，正文 ${sink.text.length} 字\n\n${sink.text.slice(0, 3000)}`;
             if (e?.timeout && sink.text.includes('{')) {
                 console.warn('[正文朗读] 分析超时，先用已经收到的部分：', sink.text.slice(0, 500));
                 return sink.text;
@@ -611,8 +620,15 @@ export class StoryVoice {
         const base = this._apiBase(s.deepApiUrl);
         if (!base) throw new Error('深度分析选了自定义 API，但还没填地址');
         if (!s.deepModel) throw new Error('深度分析选了自定义 API，但还没选模型');
-        // DeepSeek 认 JSON 模式：输出更稳，不容易写成别的格式（服务商不认就去掉再试）
-        let extra = json && /deepseek/i.test(s.deepModel) ? { response_format: { type: 'json_object' } } : {};
+        // 不让模型思考：DeepSeek / GLM 认 thinking，Qwen 认 enable_thinking；接口不认会报 400，下面自动去掉再试。
+        // （不再给 DeepSeek 开 JSON 模式：官方说明里它偶尔会因此返回空内容）
+        const m = String(s.deepModel || '');
+        let extra = {};
+        if (!s.deepThink) {
+            if (/deepseek|glm|zhipu/i.test(m)) extra = { thinking: { type: 'disabled' } };
+            else if (/qwen|qwq/i.test(m)) extra = { enable_thinking: false };
+        }
+        const t0 = Date.now();
         let useStream = stream;
         const send = (mt) => this._apiFetch(`${base}/chat/completions`, {
             method: 'POST',
@@ -627,7 +643,7 @@ export class StoryVoice {
         for (let tries = 0; !res.ok && tries < 4; tries += 1) {
             errText = await res.text().catch(() => '');
             if (!bad(res)) break;
-            if (Object.keys(extra).length && /response_format|json_object|json mode|not support|unsupported|unknown/i.test(errText)) extra = {};
+            if (Object.keys(extra).length && /thinking|enable_thinking|not support|unsupported|unknown|unrecognized|extra|invalid/i.test(errText)) extra = {};
             else if (/max[_ ]?(?:output[_ ]?)?tokens|maximum|too large|exceed/i.test(errText) && mt > 4096) mt = mt > 8192 ? 8192 : 4096;
             else if (useStream && /stream/i.test(errText)) useStream = false;
             else if (Object.keys(extra).length) extra = {};
@@ -639,7 +655,7 @@ export class StoryVoice {
         try { onProgress?.({ connected: true }); } catch (e) { /* 忽略 */ }
         const ct = res.headers.get('content-type') || '';
         if (!useStream || !res.body?.getReader || /application\/json/i.test(ct)) return this._chatOut(await res.text());
-        return this._readChatStream(res, { onProgress, sink });
+        return this._readChatStream(res, { onProgress, sink, t0 });
     }
 
     // 一整段的回答（非流式）
@@ -654,8 +670,10 @@ export class StoryVoice {
         const msg = json?.choices?.[0]?.message;
         const out = msg?.content ?? json?.choices?.[0]?.text ?? json?.content?.[0]?.text ?? '';
         const fin = json?.choices?.[0]?.finish_reason || '';
-        const str = Array.isArray(out) ? out.map(x => x?.text || '').join('') : String(out || '');
-        if (!str.trim()) throw new Error(this._emptyReason(fin));
+        let str = Array.isArray(out) ? out.map(x => x?.text || '').join('') : String(out || '');
+        const rc = String(msg?.reasoning_content || msg?.reasoning || '');
+        if (!str.trim() && /\{[\s\S]*"(?:voices|tone)"/.test(rc)) str = rc.slice(rc.search(/\{[\s\S]*"(?:voices|tone)"/));
+        if (!str.trim()) { const e = new Error(this._emptyReason(fin)); e.debug = String(text).slice(0, 4000); throw e; }
         return str;
     }
 
@@ -665,7 +683,7 @@ export class StoryVoice {
 
     // 解析一段 SSE 文本（data: {...} 一行一个）
     _sseText(raw = '') {
-        let text = '', think = 0, fin = '';
+        let text = '', think = 0, fin = '', thinkText = '';
         String(raw).split(/\r?\n/).forEach(line => {
             const t = line.trim();
             if (!t.startsWith('data:')) return;
@@ -680,20 +698,23 @@ export class StoryVoice {
             if (typeof c === 'string') text += c;
             else if (Array.isArray(c)) text += c.map(x => x?.text || '').join('');
             const r = d.reasoning_content ?? d.reasoning ?? d.thinking ?? '';
-            if (r) think += String(r).length;
+            if (r) { think += String(r).length; thinkText += String(r); }
             if (ch?.finish_reason) fin = ch.finish_reason;
         });
-        return { text, think, fin };
+        return { text, think, fin, thinkText };
     }
 
-    async _readChatStream(res, { onProgress = null, sink = null } = {}) {
+    async _readChatStream(res, { onProgress = null, sink = null, t0 = Date.now() } = {}) {
         const reader = res.body.getReader();
         const dec = new TextDecoder();
-        let buf = '', text = '', think = 0, fin = '', whole = '', sse = false;
+        let buf = '', text = '', think = 0, thinkText = '', fin = '', whole = '', sse = false, bytes = 0, head = '', tail = '';
         for (;;) {
             const { value, done } = await reader.read();
             if (done) break;
             const chunk = dec.decode(value, { stream: true });
+            bytes += value?.length || 0;
+            if (head.length < 1500) head += chunk;
+            tail = (tail + chunk).slice(-1500);
             if (!sse) { whole += chunk; if (/(^|\n)\s*data:/.test(whole)) { sse = true; whole = ''; } }
             buf += chunk;
             const nl = buf.lastIndexOf('\n');
@@ -702,16 +723,29 @@ export class StoryVoice {
                 buf = buf.slice(nl + 1);
                 text += part.text;
                 think += part.think;
+                if (part.thinkText && thinkText.length < 300000) thinkText += part.thinkText;
                 if (part.fin) fin = part.fin;
             }
-            if (sink) { sink.text = text; sink.think = think; }
+            if (sink) { sink.text = text || (/\{[\s\S]*"(?:voices|tone)"/.test(thinkText) ? thinkText : ''); sink.think = think; }
             try { onProgress?.({ chars: text.length, think, connected: true }); } catch (e) { /* 忽略 */ }
         }
-        if (buf.trim()) { const part = this._sseText(buf); text += part.text; think += part.think; if (part.fin) fin = part.fin; }
-        if (sink) sink.text = text;
-        // 服务商没按流式回，而是一整段 JSON
+        if (buf.trim()) { const part = this._sseText(buf); text += part.text; think += part.think; thinkText += part.thinkText || ''; if (part.fin) fin = part.fin; }
         if (!sse && /^\s*\{/.test(whole)) return this._chatOut(whole);
-        if (!text.trim()) throw new Error(this._emptyReason(fin));
+        // 有的中转站把整段回答塞在思考里：思考里写了要求的 JSON 就拿来用
+        if (!text.trim() && /\{[\s\S]*"(?:voices|tone)"/.test(thinkText)) text = thinkText.slice(thinkText.search(/\{[\s\S]*"(?:voices|tone)"/));
+        if (sink) sink.text = text;
+        if (!text.trim()) {
+            const sec = Math.round((Date.now() - t0) / 1000);
+            let why;
+            if (/length|max/i.test(fin)) why = `模型思考了 ${think} 字，把输出长度用光了还没开始写`;
+            else if (think && !fin) why = `模型思考了 ${think} 字还没开始写，连接在第 ${sec} 秒被接口断开了（中转站超时）。把「模型思考」关掉，或换不带思考的模型`;
+            else if (!bytes) why = `接口连上了，但一个字没发就断开了（第 ${sec} 秒）。多半是中转站超时或排队失败，换个时间或换个接口`;
+            else if (/safety|content_filter|block/i.test(fin)) why = '被安全过滤拦了';
+            else why = `接口返回了 ${bytes} 字节，但里面没有回答（${fin || '没有结束标记'}，第 ${sec} 秒）。在「查看 / 编辑」里能看到它实际回了什么`;
+            const err = new Error(`自定义 API 没有返回内容：${why}`);
+            err.debug = `【用时】${sec} 秒  【收到】${bytes} 字节  【思考】${think} 字  【结束标记】${fin || '无'}\n\n【开头】\n${head}\n\n【结尾】\n${tail}`;
+            throw err;
+        }
         return text;
     }
 
@@ -3128,6 +3162,14 @@ export class StoryVoiceApp {
                                 </div>
                             </div>
                             <div class="yzsv-btns" style="margin-bottom:10px;"><button type="button" class="yzsv-mini" id="yzsv-api-test">测试连接</button></div>
+                            <div class="yzsv-field"><label>模型思考</label>
+                                <div class="yzsv-seg">
+                                    <button type="button" data-think="0" class="${!s.deepThink ? 'is-on' : ''}">关（快，推荐）</button>
+                                    <button type="button" data-think="1" class="${s.deepThink ? 'is-on' : ''}">开（慢）</button>
+                                </div>
+                                <input type="hidden" data-k="deepThink" value="${s.deepThink ? '1' : '0'}">
+                                <div class="yzsv-note" style="margin-top:6px;">DeepSeek Pro 这类模型默认先想很久再写，免费中转站常常等不到它开口就把连接断了，于是「没有返回内容」。关掉后会请接口跳过思考（接口不认会自动去掉）；还是不行就换不带思考的模型（名字里有 chat / flash / v3 的）。</div>
+                            </div>
                         </div>
                         <div class="yzsv-field"><label>分析超时（秒）</label><div class="yzsv-note" style="margin:-2px 0 6px;">自定义 API：多久没收到新内容才算超时（模型在思考也算有内容）；其他连接：整次分析的总时长。</div><input class="yzsv-input" data-k="deepTimeout" type="number" min="30" max="600" value="${esc(s.deepTimeout)}"></div>
                         <div class="yzsv-note">可以跟随酒馆、选酒馆「连接配置管理」里存的连接，或者选「自定义 API」自己填地址和密钥（OpenAI 兼容格式），拉取后选模型。分析结果只存在这台设备的浏览器里（最近 100 楼，更早的自动删），正文没改就不会重复调用；「清缓存」会一起清掉；楼层下面可以点「重新分析」。</div>
@@ -3437,6 +3479,7 @@ export class StoryVoiceApp {
             deepModels: cur.deepModels,
             deepAuto: val('deepAuto') ? String(val('deepAuto').value || '0') === '1' : !!cur.deepAuto,
             deepTimeout: num('deepTimeout', 30, 600, 150),
+            deepThink: val('deepThink') ? String(val('deepThink').value || '0') === '1' : !!cur.deepThink,
             deepContext: val('deepContext') ? Math.min(10, Math.max(0, Math.round(Number(val('deepContext').value) || 0))) : cur.deepContext,
             deepInclude: val('deepInclude') ? String(val('deepInclude').value || '').trim() : cur.deepInclude,
             deepExclude: val('deepExclude') ? String(val('deepExclude').value || '').trim() : cur.deepExclude,
@@ -3610,6 +3653,13 @@ export class StoryVoiceApp {
             const nextBody = this._root().querySelector('.yzsv-body');
             if (nextBody) nextBody.scrollTop = top;
             toast('已保存', b.dataset.chmode === 'unified' ? '所有人统一用选的渠道' : '每个人按自己配的渠道读');
+        }));
+        root.querySelectorAll('[data-think]').forEach(b => b.addEventListener('click', () => {
+            root.querySelectorAll('[data-think]').forEach(x => x.classList.toggle('is-on', x === b));
+            const h = root.querySelector('[data-k="deepThink"]');
+            if (h) h.value = b.dataset.think;
+            this.sv.saveSettings(this._collect());
+            toast('已保存', b.dataset.think === '1' ? '让模型先思考再写（更慢）' : '请模型跳过思考直接写');
         }));
         root.querySelectorAll('[data-auto]').forEach(b => b.addEventListener('click', () => {
             root.querySelectorAll('[data-auto]').forEach(x => x.classList.toggle('is-on', x === b));
