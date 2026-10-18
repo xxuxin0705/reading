@@ -2299,7 +2299,7 @@ export class StoryVoice {
     }
 
     // 这句台词在聊天里的上下文（给模型翻译时理解语境用）
-    _lineContext(text = '') {
+    _transContext(text = '') {
         const t = String(text || '').trim();
         const chat = window.SillyTavern?.getContext?.()?.chat || [];
         const probe = t.slice(0, 6);
@@ -2371,7 +2371,7 @@ export class StoryVoice {
     async _translateByModel(text = '', { speaker = '', signal = null } = {}) {
         const ctx = window.SillyTavern?.getContext?.();
         const who = speaker || '';
-        const context = this._lineContext(text);
+        const context = this._transContext(text);
         const sys = [
             '你是给动画、游戏、轻小说做中文字幕的译者，把一句台词翻成中国人真会这么说的口语。',
             '要求：',
