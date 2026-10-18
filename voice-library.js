@@ -2,6 +2,8 @@
 // 所有聊天共用（存在插件设置里），换聊天、换回来都还在；
 // 同名但不同作品的角色，可以设成「只在某个角色卡用」。
 
+import { uiConfirm, uiPrompt } from './ui-dialog.js';
+
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const splitList = (v) => [...new Set(String(v || '').split(/[,，、;；\n]/).map(x => x.trim()).filter(Boolean))];
 
@@ -223,7 +225,7 @@ function bindBank(root, lib, toast) {
             if (using) using.innerHTML = id ? `正在用：自己填的 <b>${esc(shortId(id))}</b>${bankOf(lib, box.dataset.bankCh).length ? '（点「存」起个名字，以后在下拉里切换）' : ''}` : '还没选音色';
         }
     });
-    root.addEventListener('click', (ev) => {
+    root.addEventListener('click', async (ev) => {
         const save = ev.target.closest('[data-bank-save]');
         const del = ev.target.closest('[data-bank-del]');
         if (!save && !del) return;
@@ -235,7 +237,7 @@ function bindBank(root, lib, toast) {
             const id = String(inp.value || '').trim();
             if (!id) { toast('还没填', '先填好音色 ID 再存'); return; }
             const old = list.find(x => x.id === id);
-            const name = String(window.prompt('给这个音色起个名字（比如：活泼、少年清亮、温柔御姐）', old?.name || `音色 ${list.length + 1}`) || '').trim();
+            const name = String(await uiPrompt('给这个音色起个名字（比如：活泼、少年清亮、温柔御姐）', old?.name || `音色 ${list.length + 1}`) || '').trim();
             if (!name) return;
             bankSet(lib, ch, [...list.filter(x => x.id !== id), { name: name.slice(0, 20), id }]);
             toast('已存', `「${name}」以后在下拉里一点就能切换`);
@@ -245,7 +247,7 @@ function bindBank(root, lib, toast) {
         const id = String(inp.value || '').trim();
         const hit = list.find(x => x.id === id);
         if (!hit) return;
-        if (!window.confirm(`从收藏夹删掉「${hit.name}」？\n现在这里还是用这个音色 ID，只是不再显示名字；已经用着它的别人也不受影响。`)) return;
+        if (!(await uiConfirm(`从收藏夹删掉「${hit.name}」？\n现在这里还是用这个音色 ID，只是不再显示名字；已经用着它的别人也不受影响。`, { okText: '删掉', danger: true }))) return;
         bankSet(lib, ch, list.filter(x => x.id !== id));
         redraw(box, { custom: true });
     });
@@ -356,8 +358,8 @@ export function renderLibrary(app, lib, { editId = null } = {}) {
     root.querySelectorAll('.yzr-lib-item').forEach(cardEl => {
         const x = all.find(e => e.id === cardEl.dataset.id);
         cardEl.querySelector('[data-lib-edit]')?.addEventListener('click', () => editEntry(app, lib, x));
-        cardEl.querySelector('[data-lib-del]')?.addEventListener('click', () => {
-            if (!window.confirm(`删除「${x.name}」的音色设置？`)) return;
+        cardEl.querySelector('[data-lib-del]')?.addEventListener('click', async () => {
+            if (!(await uiConfirm(`删除「${x.name}」的音色设置？`, { okText: '删除', danger: true }))) return;
             lib.remove(x.id);
             keepScroll();
         });

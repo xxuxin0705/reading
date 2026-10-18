@@ -2,6 +2,7 @@
 // 只改页面显示，不改聊天记录。音色在插件自己的「角色音色库」里配（所有聊天共用）。
 
 import { favStore, needsTranslation, pinStore } from './fav-store.js';
+import { uiConfirm, uiPrompt } from './ui-dialog.js';
 import { startAmbience, AMBIENCE_LABELS } from './ambience.js';
 import { adaptScript, channelProfile } from './tts-adapt.js';
 import { openDeepEditor } from './deep-editor.js';
@@ -143,6 +144,18 @@ export function parsePairs(text = '') {
     return out;
 }
 
+// 收藏里译文的来源
+function transLabel(x = {}) {
+    if (!x.translation) return '';
+    return { story: '正文原译', model: '模型意译', edited: '已手改', web: '网页机翻' }[x.transFrom] || '旧版机翻';
+}
+
+// 是中文译文：有汉字、没有假名和韩文
+function isZhText(t = '') {
+    const x = String(t || '');
+    return /[\u4e00-\u9fff]/.test(x) && !/[\u3040-\u30ff\uac00-\ud7af]/.test(x);
+}
+
 function findRanges(text, pairs, maxLen = 1200) {
     const ranges = [];
     pairs.forEach(([open, close]) => {
@@ -189,6 +202,8 @@ export class StoryVoice {
         this._cueMemo = new Map(); // 模型标的 [[名字]] 显示时会被藏掉，重新处理时靠这里记住
         this._deepJobs = new Map(); // 正在深度分析的楼层：hash → Promise
         this._deepErr = new Map();
+        this._deepAborts = new Map(); // 正在分析的楼层：hash → AbortController（再点一下 / 取消 用）
+        this._deepProgress = new Map(); // 正在分析的楼层收到了多少字
     }
 
     // ---------- 深度分析 ----------
@@ -334,6 +349,10 @@ export class StoryVoice {
         const done = this._lineEntry(msg);
         if (!force && done && !done.manualOnly) return Promise.resolve(done);
         if (this._deepJobs.has(hash)) return this._deepJobs.get(hash);
+        const ctl = new AbortController();
+        this._deepAborts.set(hash, ctl);
+        this._deepProgress.delete(hash);
+        const onProgress = (p) => this._showDeepProgress(id, hash, p);
         const job = (async () => {
             await this._getWechatData().catch(() => null);
             const full = this._deepText(msg);
@@ -361,13 +380,14 @@ export class StoryVoice {
             this._refreshDeepStatus(id);
             // Gemini 2.5 Pro 这类会思考的模型：思考也算在输出长度里，给够长度；回答没法读就再要一次
             const timeout = (Number(s.deepTimeout) || 150) * 1000;
-            let raw = await this._callModel(messages, { timeout, maxTokens: 16000, jsonSchema: DEEP_SCHEMA });
+            let raw = await this._callModel(messages, { timeout, maxTokens: 16000, jsonSchema: DEEP_SCHEMA, signal: ctl.signal, onProgress });
             let parsed = parseDeep(raw, items);
             if (parsed && !parsed.useful && !parsed.tone) parsed = null; // 读出来是空的（没有情绪、没有标注）：当成没读懂，再要一次
             if (!parsed) {
                 console.warn('[正文朗读] 深度分析第一次的回答没法读，再试一次：', String(raw).slice(0, 2000));
                 const again = [...messages, { role: 'assistant', content: String(raw || '').slice(0, 400) }, { role: 'user', content: '上面的回答不是要求的格式。只输出一个 JSON 对象（以 { 开头、以 } 结尾），不要思考过程、不要解释、不要代码块。' }];
-                raw = await this._callModel(again, { timeout, maxTokens: 16000, jsonSchema: DEEP_SCHEMA });
+                this._deepProgress.delete(hash);
+                raw = await this._callModel(again, { timeout, maxTokens: 16000, jsonSchema: DEEP_SCHEMA, signal: ctl.signal, onProgress });
                 parsed = parseDeep(raw, items);
                 if (parsed && !parsed.useful && !parsed.tone) {
                     console.warn('[正文朗读] 深度分析的回答里没有可用的内容：', raw);
@@ -402,15 +422,47 @@ export class StoryVoice {
         })();
         this._deepJobs.set(hash, job);
         job.catch(err => {
+            if (err?.cancelled || ctl.signal.aborted) {
+                this._deepErr.delete(hash);
+                this._toast('已取消分析', '这一楼先按不分析读；想分析再点「分析」', 'info');
+                return;
+            }
             console.warn('[正文朗读] 深度分析失败:', err);
             this._deepErr.set(hash, String(err?.message || err).slice(0, 120));
             this._toast('深度分析失败', `${String(err?.message || err).slice(0, 120)}（这一楼先按不分析读）`, 'error');
         }).finally(() => {
             this._deepJobs.delete(hash);
+            this._deepAborts.delete(hash);
+            this._deepProgress.delete(hash);
             this.processById(id);
             if (this.getSettings().deepAuto && this._lineEntry(msg)) setTimeout(() => this._prefetchAfterDeep(id).catch(() => null), 60);
         });
         return job;
+    }
+
+    // 取消正在进行的深度分析（楼层下的「取消」、或者分析中再点一下 ▶）
+    cancelDeep(id) {
+        const msg = window.SillyTavern?.getContext?.()?.chat?.[Number(id)];
+        const h = msg ? this._deepHashOf(msg) : '';
+        const ctl = h ? this._deepAborts.get(h) : null;
+        if (!ctl) return false;
+        if (this.playing?.waitDeep === h) this.stop();
+        ctl.abort();
+        return true;
+    }
+
+    // 分析中：楼层下面显示收到了多少（不整楼重画，只改那几个字）
+    _showDeepProgress(id, hash, p = {}) {
+        this._deepProgress.set(hash, p);
+        const el = document.querySelector(`#chat .mes[mesid="${id}"] .yzsv-deep-prog`);
+        if (el) el.textContent = this._deepProgText(p);
+    }
+
+    _deepProgText(p) {
+        if (!p) return '';
+        if (p.chars) return `（已写 ${p.chars} 字）`;
+        if (p.think) return `（模型思考中 ${p.think} 字）`;
+        return p.connected ? '（已连上，等模型开口）' : '';
     }
 
     _refreshDeepStatus(id) {
@@ -420,17 +472,26 @@ export class StoryVoice {
     }
 
     // 后台调用模型：选了连接配置就走那条，否则跟随酒馆当前的 API
-    async _callModel(messages, { timeout = 150000, maxTokens = 6000, jsonSchema = null } = {}) {
+    // signal：外面取消；onProgress：自定义 API 流式收到内容时回调。
+    // 自定义 API 走流式，timeout 算「多久没收到新内容」（思考也算在内），不会因为模型想得久就被掐掉；
+    // 真超时了但已经收到一部分 JSON，就把收到的交出去，能用的句子照样用上
+    async _callModel(messages, { timeout = 150000, maxTokens = 6000, jsonSchema = null, signal = null, onProgress = null } = {}) {
         const ctx = window.SillyTavern?.getContext?.();
         const profile = String(this.getSettings().deepProfile || '');
+        const custom = profile === '__custom__';
         const sys = messages.find(m => m.role === 'system')?.content || '';
         const user = messages.filter(m => m.role !== 'system').map(m => m.content).join('\n');
         const ctl = new AbortController();
+        const onOuter = () => ctl.abort();
+        if (signal) { if (signal.aborted) ctl.abort(); else signal.addEventListener('abort', onOuter); }
+        const sink = { text: '', think: 0 };
+        let kick = () => {};
+        const progress = (p) => { kick(); try { onProgress?.(p); } catch (e) { /* 忽略 */ } };
         const run = (async () => {
-            if (profile === '__custom__') return this._customChat(messages, { maxTokens, signal: ctl.signal });
+            if (custom) return this._customChat(messages, { maxTokens, signal: ctl.signal, onProgress: progress, sink, json: !!jsonSchema });
             const svc = ctx?.ConnectionManagerRequestService;
             if (profile && svc?.sendRequest) {
-                const res = await svc.sendRequest(profile, messages, maxTokens, { stream: false, extractData: true, includePreset: false, includeInstruct: false });
+                const res = await svc.sendRequest(profile, messages, maxTokens, { stream: false, signal: ctl.signal, extractData: true, includePreset: false, includeInstruct: false });
                 return typeof res === 'string' ? res : (res?.content ?? res?.choices?.[0]?.message?.content ?? '');
             }
             if (typeof ctx?.generateRaw === 'function') {
@@ -440,9 +501,37 @@ export class StoryVoice {
             if (typeof ctx?.generateQuietPrompt === 'function') return ctx.generateQuietPrompt(`${sys}\n\n${user}`, false, true);
             throw new Error('当前酒馆版本不支持后台调用模型');
         })();
-        let timer;
-        const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`分析超过 ${Math.round(timeout / 1000)} 秒没有完成`)), timeout); });
-        try { return String(await Promise.race([run, limit]) || ''); } finally { clearTimeout(timer); ctl.abort(); }
+        run.catch(() => null);
+        const secs = Math.round(timeout / 1000);
+        let timer = null, hard = null;
+        const limit = new Promise((_, rej) => {
+            const fail = (why) => { const err = new Error(why); err.timeout = true; rej(err); };
+            const arm = () => { clearTimeout(timer); timer = setTimeout(() => fail(custom ? `超过 ${secs} 秒没收到模型的新内容（接口可能卡住了，或者排队太久）` : `分析超过 ${secs} 秒没有完成`), timeout); };
+            if (custom) {
+                kick = arm;
+                const cap = Math.max(timeout * 4, 600000);
+                hard = setTimeout(() => fail(`分析总共超过 ${Math.round(cap / 1000)} 秒还没写完`), cap);
+            }
+            arm();
+        });
+        const cancelled = new Promise((_, rej) => {
+            if (!signal) return;
+            const f = () => { const e = new Error('已取消'); e.cancelled = true; rej(e); };
+            if (signal.aborted) f(); else signal.addEventListener('abort', f);
+        });
+        try { return String(await Promise.race([run, limit, cancelled]) || ''); }
+        catch (e) {
+            if (e?.timeout && sink.text.includes('{')) {
+                console.warn('[正文朗读] 分析超时，先用已经收到的部分：', sink.text.slice(0, 500));
+                return sink.text;
+            }
+            throw e;
+        } finally {
+            clearTimeout(timer);
+            clearTimeout(hard);
+            if (signal) signal.removeEventListener('abort', onOuter);
+            ctl.abort();
+        }
     }
 
     // ---------- 自定义 API（OpenAI 兼容）----------
@@ -515,33 +604,115 @@ export class StoryVoice {
         throw lastErr || new Error('拉取失败');
     }
 
-    async _customChat(messages, { maxTokens = 6000, signal } = {}) {
+    // 自定义 API（OpenAI 兼容）。默认流式：边写边收，模型想得久也不会被当成卡住；
+    // 服务商不支持流式、或者返回的是一整段 JSON，也能读
+    async _customChat(messages, { maxTokens = 6000, signal, onProgress = null, sink = null, json = false, stream = true } = {}) {
         const s = this.getSettings();
         const base = this._apiBase(s.deepApiUrl);
         if (!base) throw new Error('深度分析选了自定义 API，但还没填地址');
         if (!s.deepModel) throw new Error('深度分析选了自定义 API，但还没选模型');
+        // DeepSeek 认 JSON 模式：输出更稳，不容易写成别的格式（服务商不认就去掉再试）
+        let extra = json && /deepseek/i.test(s.deepModel) ? { response_format: { type: 'json_object' } } : {};
+        let useStream = stream;
         const send = (mt) => this._apiFetch(`${base}/chat/completions`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...(s.deepApiKey ? { Authorization: `Bearer ${s.deepApiKey}` } : {}) },
+            headers: { 'Content-Type': 'application/json', ...(useStream ? { Accept: 'text/event-stream' } : {}), ...(s.deepApiKey ? { Authorization: `Bearer ${s.deepApiKey}` } : {}) },
             signal,
-            body: JSON.stringify({ model: s.deepModel, messages, temperature: 0.6, max_tokens: mt, stream: false })
+            body: JSON.stringify({ model: s.deepModel, messages, temperature: 0.6, max_tokens: mt, stream: useStream, ...extra })
         });
-        let res = await send(maxTokens);
-        let text = await res.text();
-        // 有的服务商不接受这么大的输出长度：降下来再试
-        for (const mt of [8192, 4096]) {
-            if (res.ok || mt >= maxTokens || !(res.status === 400 || res.status === 422) || !/max[_ ]?(?:output[_ ]?)?tokens|maximum|too large|exceed/i.test(text)) break;
+        const bad = (r) => r.status === 400 || r.status === 422;
+        let mt = maxTokens;
+        let res = await send(mt);
+        let errText = '';
+        for (let tries = 0; !res.ok && tries < 4; tries += 1) {
+            errText = await res.text().catch(() => '');
+            if (!bad(res)) break;
+            if (Object.keys(extra).length && /response_format|json_object|json mode|not support|unsupported|unknown/i.test(errText)) extra = {};
+            else if (/max[_ ]?(?:output[_ ]?)?tokens|maximum|too large|exceed/i.test(errText) && mt > 4096) mt = mt > 8192 ? 8192 : 4096;
+            else if (useStream && /stream/i.test(errText)) useStream = false;
+            else if (Object.keys(extra).length) extra = {};
+            else break;
             res = await send(mt);
-            text = await res.text();
+            errText = '';
         }
-        if (!res.ok) throw new Error(`自定义 API HTTP ${res.status}：${text.slice(0, 160)}`);
+        if (!res.ok) throw new Error(`自定义 API HTTP ${res.status}：${(errText || await res.text().catch(() => '')).slice(0, 160)}`);
+        try { onProgress?.({ connected: true }); } catch (e) { /* 忽略 */ }
+        const ct = res.headers.get('content-type') || '';
+        if (!useStream || !res.body?.getReader || /application\/json/i.test(ct)) return this._chatOut(await res.text());
+        return this._readChatStream(res, { onProgress, sink });
+    }
+
+    // 一整段的回答（非流式）
+    _chatOut(text = '') {
         let json = null;
-        try { json = JSON.parse(text); } catch (e) { throw new Error('自定义 API 返回的不是 JSON'); }
+        try { json = JSON.parse(text); } catch (e) {
+            // 说是 JSON 其实是流式格式
+            if (/^\s*data:/m.test(text)) return this._sseText(text).text || (() => { throw new Error('自定义 API 没有返回内容'); })();
+            throw new Error('自定义 API 返回的不是 JSON');
+        }
+        if (json?.error) throw new Error(`自定义 API 出错：${String(json.error.message || json.error).slice(0, 160)}`);
         const msg = json?.choices?.[0]?.message;
         const out = msg?.content ?? json?.choices?.[0]?.text ?? json?.content?.[0]?.text ?? '';
         const fin = json?.choices?.[0]?.finish_reason || '';
-        if (!String(out || '').trim()) throw new Error(`自定义 API 没有返回内容${fin ? `（${fin}${/length|max/i.test(fin) ? '：思考用光了输出长度' : /safety|content_filter|block/i.test(fin) ? '：被安全过滤拦了' : ''}）` : ''}`);
-        return Array.isArray(out) ? out.map(x => x?.text || '').join('') : String(out);
+        const str = Array.isArray(out) ? out.map(x => x?.text || '').join('') : String(out || '');
+        if (!str.trim()) throw new Error(this._emptyReason(fin));
+        return str;
+    }
+
+    _emptyReason(fin = '') {
+        return `自定义 API 没有返回内容${fin ? `（${fin}${/length|max/i.test(fin) ? '：思考用光了输出长度' : /safety|content_filter|block/i.test(fin) ? '：被安全过滤拦了' : ''}）` : ''}`;
+    }
+
+    // 解析一段 SSE 文本（data: {...} 一行一个）
+    _sseText(raw = '') {
+        let text = '', think = 0, fin = '';
+        String(raw).split(/\r?\n/).forEach(line => {
+            const t = line.trim();
+            if (!t.startsWith('data:')) return;
+            const data = t.slice(5).trim();
+            if (!data || data === '[DONE]') return;
+            let j = null;
+            try { j = JSON.parse(data); } catch (e) { return; }
+            if (j?.error) throw new Error(`自定义 API 出错：${String(j.error.message || j.error).slice(0, 160)}`);
+            const ch = j?.choices?.[0];
+            const d = ch?.delta || ch?.message || {};
+            const c = d.content;
+            if (typeof c === 'string') text += c;
+            else if (Array.isArray(c)) text += c.map(x => x?.text || '').join('');
+            const r = d.reasoning_content ?? d.reasoning ?? d.thinking ?? '';
+            if (r) think += String(r).length;
+            if (ch?.finish_reason) fin = ch.finish_reason;
+        });
+        return { text, think, fin };
+    }
+
+    async _readChatStream(res, { onProgress = null, sink = null } = {}) {
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '', text = '', think = 0, fin = '', whole = '', sse = false;
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = dec.decode(value, { stream: true });
+            if (!sse) { whole += chunk; if (/(^|\n)\s*data:/.test(whole)) { sse = true; whole = ''; } }
+            buf += chunk;
+            const nl = buf.lastIndexOf('\n');
+            if (nl >= 0) {
+                const part = this._sseText(buf.slice(0, nl));
+                buf = buf.slice(nl + 1);
+                text += part.text;
+                think += part.think;
+                if (part.fin) fin = part.fin;
+            }
+            if (sink) { sink.text = text; sink.think = think; }
+            try { onProgress?.({ chars: text.length, think, connected: true }); } catch (e) { /* 忽略 */ }
+        }
+        if (buf.trim()) { const part = this._sseText(buf); text += part.text; think += part.think; if (part.fin) fin = part.fin; }
+        if (sink) sink.text = text;
+        // 服务商没按流式回，而是一整段 JSON
+        if (!sse && /^\s*\{/.test(whole)) return this._chatOut(whole);
+        if (!text.trim()) throw new Error(this._emptyReason(fin));
+        return text;
     }
 
     // 连接管理器里存的连接配置（深度分析可以单独选一条便宜/快的模型）
@@ -730,11 +901,11 @@ export class StoryVoice {
         return `${chatId}:${id}:${line}:${text.slice(0, 40)}`;
     }
 
-    _chooseSpeaker(bar) {
+    async _chooseSpeaker(bar) {
         const speakers = this.getSettings().speakers.filter(x => x.name && x.voice);
         if (!speakers.length) { this._toast('未配置音色', '请先在朗读 App 配置角色名称和音色 ID'); return; }
         const options = speakers.map((x, i) => `${i + 1}. ${x.name}`).join('\n');
-        const choice = window.prompt(`这句台词由谁来说？\n${options}\n输入序号，保存后点击 ↻ 重生成：`, '1');
+        const choice = await uiPrompt(`这句台词由谁来说？\n${options}\n输入序号，保存后点击 ↻ 重生成：`, '1');
         if (choice === null) return;
         const chosen = speakers[Number(choice.trim()) - 1];
         if (!chosen) { this._toast('选择无效', '请输入列表中的序号'); return; }
@@ -1075,7 +1246,22 @@ export class StoryVoice {
                 text = text.slice(0, k.start - r.innerStart) + text.slice(k.end - r.innerStart);
             });
             text = text.replace(/\s+/g, ' ').trim();
-            return { ...r, text };
+            // 正文自己带的译文：台词里括号中的（跳过符号），或者紧跟在引号后面的（中文）
+            let trans = '';
+            if (needsTranslation(text)) {
+                const inner = skips.filter(k => k.start >= r.innerStart && k.end <= r.innerEnd).map(k => full.slice(k.innerStart, k.innerEnd).trim()).filter(isZhText);
+                if (inner.length) trans = inner.join(' ');
+                if (!trans) {
+                    // 括号前后不配对（（…)）没被当成跳过符号：还在台词里，拆出来，不念
+                    const m = text.match(/[（(]([^（()）]{1,300})[）)]\s*$/);
+                    if (m && isZhText(m[1]) && needsTranslation(text.slice(0, m.index))) { trans = m[1].trim(); text = text.slice(0, m.index).trim(); }
+                }
+                if (!trans) {
+                    const after = full.slice(r.end, r.end + 320).match(/^[ \t]{0,2}[（(]([^（()）\n]{1,300})[）)]/);
+                    if (after && isZhText(after[1])) trans = after[1].trim();
+                }
+            }
+            return { ...r, text, ...(trans ? { trans } : {}) };
         }).filter(r => /[\p{L}\p{N}]/u.test(r.text))
             // 引号里其实是招牌、标题、名字（“B1F 食品フロア”图标、写着“营业中”），不是有人在说话
             .filter(r => {
@@ -1276,6 +1462,7 @@ export class StoryVoice {
             const override = this.speakerOverrides[this._overrideKey(id, r.index, r.text)];
             bar.dataset.speaker = override || r.speaker;
             if (r.cue) bar.dataset.cue = r.cue;
+            if (r.trans) bar.dataset.trans = r.trans;
             if (r.deep) bar.dataset.deep = JSON.stringify(r.deep);
             if (r.deep?.why) bar.title = `${r.deep.why}${r.deep.t ? ` · 张力 ${r.deep.t}` : ''}`;
             bar.dataset.manualSpeaker = override ? '1' : '0';
@@ -1311,7 +1498,7 @@ export class StoryVoice {
                 deepHtml = deepEntry && !pending
                     ? `<button type="button" class="yzsv-deep yzsv-deep-open" title="点开查看、修改每句的分析">${label} ›</button><button type="button" class="yzsv-btn yzsv-deep-open">查看 / 编辑</button><button type="button" class="yzsv-btn yzsv-reanalyze">重新分析</button>`
                     // 还没分析 / 分析中 / 失败：逐句调整的入口照样在
-                    : `<span class="yzsv-deep${pending ? ' is-busy' : ''}" title="${esc(err || '')}">${label}${err && !pending ? `：${esc(err.slice(0, 40))}` : ''}</span>${pending ? '' : `<button type="button" class="yzsv-btn yzsv-reanalyze">${err ? '重试' : '分析'}</button>`}<button type="button" class="yzsv-btn yzsv-deep-open">🎭 逐句调整</button>`;
+                    : `<span class="yzsv-deep${pending ? ' is-busy' : ''}" title="${esc(err || '')}">${label}${pending ? `<span class="yzsv-deep-prog">${esc(this._deepProgText(this._deepProgress.get(h)))}</span>` : ''}${err && !pending ? `：${esc(err.slice(0, 40))}` : ''}</span>${pending ? '<button type="button" class="yzsv-btn yzsv-deep-cancel">取消分析</button>' : `<button type="button" class="yzsv-btn yzsv-reanalyze">${err ? '重试' : '分析'}</button>`}<button type="button" class="yzsv-btn yzsv-deep-open">🎭 逐句调整</button>`;
             }
             const toneChip = !deepOn && floorTone ? `<span class="yzsv-deep${floorTone === '亲密' ? ' is-nsfw' : ''}">🎬 ${esc(floorTone)}${floorTone === '亲密' ? ' · NSFW' : ''}</span>` : '';
             const editBtn = deepOn ? '' : `${toneChip}<button type="button" class="yzsv-btn yzsv-deep-open">🎭 逐句调整</button>`;
@@ -1417,6 +1604,10 @@ export class StoryVoice {
                 if (bar) openDeepEditor(this, Number(bar.dataset.mesid), bar.dataset.line, { single: true });
                 return;
             }
+            if (btn.classList.contains('yzsv-deep-cancel')) {
+                this.cancelDeep(Number(btn.closest('.mes')?.getAttribute('mesid')));
+                return;
+            }
             if (btn.classList.contains('yzsv-deep-open')) {
                 openDeepEditor(this, Number(btn.closest('.mes')?.getAttribute('mesid')));
                 return;
@@ -1426,9 +1617,9 @@ export class StoryVoice {
                 const mid = Number(mes?.getAttribute('mesid'));
                 const ent = this._deepEntry(window.SillyTavern?.getContext?.()?.chat?.[mid]);
                 const had = !!ent;
-                if (ent && Object.values(ent.lines || {}).some(v => v?.edited) && !window.confirm('这一楼有你手动改过的演法，重新分析会覆盖掉，确定吗？')) return;
-                this._startDeep(mid, { force: had });
-                this.processById(mid);
+                const go = () => { this._startDeep(mid, { force: had }); this.processById(mid); };
+                if (ent && Object.values(ent.lines || {}).some(v => v?.edited)) uiConfirm('这一楼有你手动改过的演法，重新分析会覆盖掉，确定吗？', { okText: '重新分析' }).then(ok => { if (ok) go(); });
+                else go();
                 return;
             }
             if (btn.classList.contains('yzsv-playall')) {
@@ -1985,13 +2176,15 @@ export class StoryVoice {
     }
 
     // 收藏一份音频（编辑面板里的试听版本也走这里）
-    async saveFavorite({ text = '', speaker = '', blob, rate = 1, sig = '' } = {}) {
+    async saveFavorite({ text = '', speaker = '', blob, rate = 1, sig = '', translation = '' } = {}) {
         if (sig) {
             const dup = (await favStore.all()).find(x => x.source === 'story' && x.text === text && x.speaker === speaker && x.sig === sig);
             if (dup) { this._toast('这版已经收藏过了', '要删的话去「语音收藏」里删'); return { ...dup, _dup: true }; }
         }
         const chat = String(window.SillyTavern?.getContext?.()?.name2 || '');
-        const rec = await favStore.add({ text, speaker, source: 'story', chat, blob, rate, sig, tags: [] });
+        // 正文里自带译文就直接存上（收藏里点「查看翻译」不用再翻）
+        const trans = translation || this.inlineTranslation(text);
+        const rec = await favStore.add({ text, speaker, source: 'story', chat, blob, rate, sig, tags: [], ...(trans ? { translation: trans, transFrom: 'story' } : {}) });
         this._favKeys = this._favKeys || new Set();
         this._favKeys.add(`${speaker}\u0001${text}`);
         document.querySelectorAll('#chat .yzsv-bar').forEach(b => { if (b.dataset.text === text && (b.dataset.speaker || '') === speaker) b.querySelector('.yzsv-play')?.classList.add('is-fav'); });
@@ -2087,28 +2280,73 @@ export class StoryVoice {
         pop.querySelector('input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); close(true); } });
     }
 
-    // 翻译：先用免费的网页翻译（不用 Key），都不行再用模型
-    async translateText(text = '') {
+    // 正文里这句台词自带的译文：先看页面上挂着的按钮，再翻聊天记录
+    inlineTranslation(text = '') {
+        const t = String(text || '').trim();
+        if (!t || !needsTranslation(t)) return '';
+        for (const b of document.querySelectorAll('#chat .yzsv-bar')) if (b.dataset.text === t && b.dataset.trans) return b.dataset.trans;
+        const chat = window.SillyTavern?.getContext?.()?.chat || [];
+        const probe = t.slice(0, 6);
+        for (let i = chat.length - 1, n = 0; i >= 0 && n < 400; i -= 1, n += 1) {
+            const m = chat[i];
+            if (!m?.mes || !String(m.mes).includes(probe)) continue;
+            try {
+                const hit = this._analyze(this._rawToText(m.mes), { id: i, msg: m, useMemo: false }).lines.find(r => r.text === t && r.trans);
+                if (hit) return hit.trans;
+            } catch (e) { /* 这一楼读不了就跳过 */ }
+        }
+        return '';
+    }
+
+    // 这句台词在聊天里的上下文（给模型翻译时理解语境用）
+    _lineContext(text = '') {
+        const t = String(text || '').trim();
+        const chat = window.SillyTavern?.getContext?.()?.chat || [];
+        const probe = t.slice(0, 6);
+        for (let i = chat.length - 1, n = 0; i >= 0 && n < 400; i -= 1, n += 1) {
+            const raw = chat[i]?.mes ? this._rawToText(chat[i].mes) : '';
+            const at = probe ? raw.indexOf(probe) : -1;
+            if (at < 0) continue;
+            return raw.slice(Math.max(0, at - 260), at + t.length + 160).replace(MARK_RE, '').replace(/\s+/g, ' ').trim();
+        }
+        return '';
+    }
+
+    // 翻译一句台词：
+    // 1) 正文里自带的译文直接用；2) 用模型按角色语气意译（跟深度分析同一个连接）；
+    // 3) 模型用不了才退回网页翻译，并且标上「机翻」，可以自己改
+    // 返回 { text, from: 'story' | 'model' | 'web' }
+    async translateText(text = '', { speaker = '', signal = null, skipInline = false } = {}) {
         const src = String(text || '').trim();
-        if (!src) return '';
-        const lang = /[\u3040-\u30ff]/.test(src) ? 'ja' : /[\uac00-\ud7af]/.test(src) ? 'ko' : 'auto';
-        // 1) 浏览器自带的离线翻译（新版 Chrome 有）
-        // 只在翻译包已经下载好时用（不触发下载，最多等 4 秒）
-        const within = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+        if (!src) return { text: '', from: '' };
+        if (!skipInline) {
+            const own = this.inlineTranslation(src);
+            if (own) return { text: own, from: 'story' };
+        }
+        let modelErr = null;
         try {
-            if (window.Translator?.create && lang !== 'auto') {
-                const av = await within(window.Translator.availability?.({ sourceLanguage: lang, targetLanguage: 'zh' }) ?? Promise.resolve('no'), 1500);
-                if (av === 'available' || av === 'readily') {
-                    const tr = await within(window.Translator.create({ sourceLanguage: lang, targetLanguage: 'zh' }), 3000);
-                    const out = await within(tr.translate(src), 4000);
-                    if (out) return String(out).trim();
-                }
-            }
-        } catch (e) { /* 换下一个 */ }
+            const out = await this._translateByModel(src, { speaker, signal });
+            if (out) return { text: out, from: 'model' };
+        } catch (e) {
+            if (e?.cancelled || signal?.aborted) throw e;
+            modelErr = e;
+            console.warn('[正文朗读] 模型翻译失败，改用网页翻译:', e);
+        }
+        try {
+            const web = await this._translateByWeb(src, signal);
+            if (web) return { text: web, from: 'web' };
+        } catch (e) { if (signal?.aborted) throw e; }
+        throw modelErr || new Error('翻译失败');
+    }
+
+    async _translateByWeb(src, signal = null) {
+        const lang = /[\u3040-\u30ff]/.test(src) ? 'ja' : /[\uac00-\ud7af]/.test(src) ? 'ko' : 'auto';
         // 每个网页翻译最多等 6 秒（国内连不上 Google 时不会卡住）
         const tryGet = async (url, pick) => {
             const ctl = new AbortController();
             const timer = setTimeout(() => ctl.abort(), 6000);
+            const outer = () => ctl.abort();
+            signal?.addEventListener?.('abort', outer);
             try {
                 let res;
                 try { res = await fetch(url, { signal: ctl.signal }); }
@@ -2120,28 +2358,33 @@ export class StoryVoice {
                 const out = pick(await res.json());
                 if (!out) throw new Error('空结果');
                 return String(out).trim();
-            } finally { clearTimeout(timer); }
+            } finally { clearTimeout(timer); signal?.removeEventListener?.('abort', outer); }
         };
-        // 2) Google 网页翻译接口
         try {
             return await tryGet(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=${lang}&tl=zh-CN&dt=t&q=${encodeURIComponent(src)}`,
                 j => (Array.isArray(j?.[0]) ? j[0].map(x => x?.[0] || '').join('') : ''));
-        } catch (e) { /* 换下一个 */ }
-        // 3) MyMemory 免费翻译
-        try {
-            return await tryGet(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(src)}&langpair=${lang === 'auto' ? 'en' : lang}|zh-CN`,
-                j => j?.responseData?.translatedText);
-        } catch (e) { /* 换下一个 */ }
-        // 4) 最后才用模型
-        return this._translateByModel(src);
+        } catch (e) { if (signal?.aborted) throw e; }
+        return tryGet(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(src)}&langpair=${lang === 'auto' ? 'en' : lang}|zh-CN`,
+            j => j?.responseData?.translatedText);
     }
 
-    async _translateByModel(text = '') {
-        const out = await this._callModel([
-            { role: 'system', content: '你是翻译。把用户给的一句台词翻译成自然、口语化的简体中文，保留语气和情绪，只输出译文，不要解释、不要加引号。' },
-            { role: 'user', content: String(text) }
-        ], { timeout: 60000, maxTokens: 400 });
-        return String(out || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim().replace(/^["「『]|["」』]$/g, '');
+    async _translateByModel(text = '', { speaker = '', signal = null } = {}) {
+        const ctx = window.SillyTavern?.getContext?.();
+        const who = speaker || '';
+        const context = this._lineContext(text);
+        const sys = [
+            '你是给动画、游戏、轻小说做中文字幕的译者，把一句台词翻成中国人真会这么说的口语。',
+            '要求：',
+            '1. 意译，不要逐字直译。先想清楚这句在剧情里是什么意思、什么语气、对谁说的，再用中文里最自然的说法讲出来。',
+            '2. 保住说话人的性格和腔调：撒娇、调侃、拖长音、嫌弃、宠溺、冷淡、结巴都要翻出来。拖长音用「——」或「~」（だーめ → 不——行），语尾的ね、よ、でしょ、じゃん 换成 嘛、啦、吧、呢、哦 这类中文语气词，不要漏掉也不要硬翻。',
+            '3. 不要书面腔、不要翻译腔：不说「该死」「我告诉过你……不是吗」「哦，我的天」这类译制片句式，除非原文真是这个意思。',
+            '4. 叠字、口吃、省略号、停顿照原文保留；人名、称呼按中文圈常用译法。',
+            '5. 只输出译文一行，不要解释、不要加引号、不要写原文。'
+        ].join('\n');
+        const user = `${who ? `说话人：${who}\n` : ''}${ctx?.name1 ? `对方 / 用户：${ctx.name1}\n` : ''}${context ? `前后文（只用来理解语境，不要翻译）：${context}\n` : ''}要翻译的台词：${text}`;
+        const out = await this._callModel([{ role: 'system', content: sys }, { role: 'user', content: user }], { timeout: 90000, maxTokens: 1500, signal });
+        return String(out || '').replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim()
+            .replace(/^(?:译文|翻译)[:：]\s*/, '').split('\n').map(x => x.trim()).filter(Boolean)[0]?.replace(/^["“「『]|["”」』]$/g, '') || '';
     }
 
     // 编辑面板保存后：这句下次播放不用缓存
@@ -2332,6 +2575,13 @@ export class StoryVoice {
     }
 
     async playBars(bars, { regen = false, trigger = null, prepared = null, noDeep = false } = {}) {
+        // 还在等这一楼的情绪分析时再点一下 ▶：取消分析、停下（按钮在分析中会重画，不能只比是不是同一个按钮）
+        const waiting = this.playing?.waitDeep;
+        if (waiting && Number(this.playing.waitMid) === Number(bars[0]?.dataset?.mesid)) {
+            this.cancelDeep(this.playing.waitMid);
+            this.stop();
+            return;
+        }
         const same = this.playing && this.playing.trigger === trigger && trigger;
         this.stop();
         if (same) return; // 再点一次 = 停止
@@ -2351,11 +2601,14 @@ export class StoryVoice {
             const needStart = h && !manual && !this._deepJobs.has(h) && !this._deepEntry(msg);
             if (needStart) this._startDeep(mid);
             if (h && !manual && this._deepJobs.has(h)) {
+                run.waitDeep = h;
+                run.waitMid = mid;
                 announce = true;
                 bars.forEach(b => b.classList.add('is-loading'));
                 trigger?.classList.add('is-busy');
                 this._toast('正在分析情绪', '分析好、语音生成好会提示你');
                 await this._deepJobs.get(h).catch(() => null);
+                run.waitDeep = null;
                 trigger?.classList.remove('is-busy');
                 bars.forEach(b => b.classList.remove('is-loading'));
                 if (this.playing !== run) return;
@@ -2611,12 +2864,12 @@ export class StoryVoice {
 .yzsv-row > span:first-child { flex: 1; min-width: 0; font-size: 14px; }
 .yzsv-row small, .yzsv-note { display: block; color: #9a9aa6; font-size: 11px; line-height: 1.5; margin-top: 3px; font-weight: 400; }
 .yzsv-switch { position: relative; flex: 0 0 44px; width: 44px; height: 26px; }
-.yzsv-switch input, .yzsv-switch input[type=checkbox] { position: absolute !important; opacity: 0 !important; inset: 0 !important; width: 100% !important; height: 100% !important; margin: 0 !important; padding: 0 !important; cursor: pointer; -webkit-appearance: none !important; appearance: none !important; background: transparent !important; border: 0 !important; box-shadow: none !important; outline: none !important; z-index: 2; }
+.yzsv-switch input, .yzsv-switch input[type=checkbox] { position: absolute !important; opacity: 0 !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important; width: 100% !important; height: 100% !important; margin: 0 !important; padding: 0 !important; cursor: pointer; -webkit-appearance: none !important; appearance: none !important; background: transparent !important; border: 0 !important; box-shadow: none !important; outline: none !important; z-index: 2; }
 .yzsv-switch input::before, .yzsv-switch input::after { display: none !important; content: none !important; }
 .yzsv-chips-mini { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .yzsv-chips-mini button { border: 1px solid #e3def2; background: #f7f5fc; color: #6b54a8; border-radius: 999px; padding: 3px 9px; font-size: 11.5px; cursor: pointer; font-family: inherit; }
 .yzsv-chips-mini button.is-on { background: #3b82f6; border-color: #3b82f6; color: #fff; }
-.yzsv-switch i { position: absolute; inset: 0; border-radius: 13px; background: #e2e2e8; transition: background .2s; pointer-events: none; }
+.yzsv-switch i { position: absolute; top: 0; left: 0; right: 0; bottom: 0; border-radius: 13px; background: #e2e2e8; transition: background .2s; pointer-events: none; }
 .yzsv-switch i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: transform .2s; }
 .yzsv-switch.is-on i { background: #a18cd1; }
 .yzsv-switch.is-on i::after { transform: translateX(18px); }
@@ -2660,6 +2913,10 @@ select.yzsv-input { height: 40px; padding: 0 30px 0 11px; line-height: 38px; -we
 .yzsv-fav-text { margin-top: 6px; font-size: 14px; line-height: 1.6; color: #222; word-break: break-word; }
 .yzsv-fav-trans { margin-top: 6px; padding: 7px 10px; border-radius: 10px; background: #f5f2fc; font-size: 13px; line-height: 1.55; color: #555; }
 .yzsv-fav-trans[hidden] { display: none; }
+.yzsv-fav-trans-t { white-space: pre-wrap; }
+.yzsv-fav-trans-from { display: inline-block; margin-left: 6px; font-size: 10.5px; color: #a08fd0; vertical-align: 1px; }
+.yzsv-fav-trans-acts { display: flex; margin-top: 5px; }
+.yzsv-fav-trans-acts button { border: 0; background: transparent; padding: 0; margin-right: 14px; font-size: 11.5px; color: #7b62c9; cursor: pointer; font-family: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .yzsv-fav-acts { display: flex; gap: 8px; margin-top: 9px; }
 .yzsv-fav-acts button { border: 0; border-radius: 9px; padding: 6px 12px; font-size: 12.5px; background: #f1eefa; color: #6b54a8; cursor: pointer; font-family: inherit; }
 .yzsv-fav-acts button.danger { margin-left: auto; background: #fbeeee; color: #c0504a; }
@@ -2872,7 +3129,7 @@ export class StoryVoiceApp {
                             </div>
                             <div class="yzsv-btns" style="margin-bottom:10px;"><button type="button" class="yzsv-mini" id="yzsv-api-test">测试连接</button></div>
                         </div>
-                        <div class="yzsv-field"><label>单次分析最长等待（秒）</label><input class="yzsv-input" data-k="deepTimeout" type="number" min="30" max="600" value="${esc(s.deepTimeout)}"></div>
+                        <div class="yzsv-field"><label>分析超时（秒）</label><div class="yzsv-note" style="margin:-2px 0 6px;">自定义 API：多久没收到新内容才算超时（模型在思考也算有内容）；其他连接：整次分析的总时长。</div><input class="yzsv-input" data-k="deepTimeout" type="number" min="30" max="600" value="${esc(s.deepTimeout)}"></div>
                         <div class="yzsv-note">可以跟随酒馆、选酒馆「连接配置管理」里存的连接，或者选「自定义 API」自己填地址和密钥（OpenAI 兼容格式），拉取后选模型。分析结果只存在这台设备的浏览器里（最近 100 楼，更早的自动删），正文没改就不会重复调用；「清缓存」会一起清掉；楼层下面可以点「重新分析」。</div>
                     </div>
                 </div>
@@ -2985,7 +3242,7 @@ export class StoryVoiceApp {
                         <div class="yzsv-fav" data-id="${esc(x.id)}">
                             <div class="yzsv-fav-top"><b data-pick-speaker="${esc(x.speaker || '未知')}">${esc(x.speaker || '未知')}</b><span>${x.source === 'wechat' ? '微信语音' : '正文'}${x.chat && x.chat !== x.speaker ? ` · ${esc(x.chat)}` : ''} · ${hm(x.at)}</span></div>
                             <div class="yzsv-fav-text">${esc(x.text)}</div>
-                            ${needsTranslation(x.text) ? `<div class="yzsv-fav-trans" ${x.translation ? '' : 'hidden'}>${esc(x.translation || '')}</div>` : ''}
+                            ${needsTranslation(x.text) ? `<div class="yzsv-fav-trans" ${x.translation ? '' : 'hidden'}><span class="yzsv-fav-trans-t">${esc(x.translation || '')}</span><span class="yzsv-fav-trans-from">${esc(transLabel(x))}</span><div class="yzsv-fav-trans-acts"><button type="button" data-trans-edit>✎ 改译文</button><button type="button" data-trans-redo>重新翻译</button></div></div>` : ''}
                             <div class="yzsv-fav-tags">${(x.tags || []).map(t => `<span data-pick-tag="${esc(t)}">#${esc(t)}</span>`).join('')}<button type="button" data-fav-tag>＋标签</button></div>
                             <div class="yzsv-fav-acts">
                                 <button type="button" data-fav-play>▶ 播放</button>
@@ -3030,37 +3287,68 @@ export class StoryVoiceApp {
             });
             card.querySelector('[data-fav-tag]')?.addEventListener('click', async () => {
                 const cur = (rec.tags || []).join('，');
-                const v = window.prompt('标签（用逗号隔开，留空就是清空）', cur);
+                const v = await uiPrompt('标签（用逗号隔开，留空就是清空）', cur);
                 if (v === null) return;
                 const next = [...new Set(String(v).split(/[,，、\s]+/).map(x => x.trim()).filter(Boolean))].slice(0, 8);
                 await favStore.update(rec.id, { tags: next });
                 rerender();
             });
-            card.querySelector('[data-fav-trans]')?.addEventListener('click', async (e) => {
-                const btn = e.currentTarget;
-                const box = card.querySelector('.yzsv-fav-trans');
-                if (!box) return;
-                if (!box.hidden && rec.translation) { box.hidden = true; btn.textContent = '查看翻译'; return; }
-                if (!rec.translation) {
-                    btn.disabled = true;
-                    btn.textContent = '翻译中…';
-                    try {
-                        rec.translation = await this.sv.translateText(rec.text);
-                        await favStore.update(rec.id, { translation: rec.translation });
-                    } catch (err) {
-                        btn.disabled = false;
-                        btn.textContent = '查看翻译';
-                        toast('翻译失败', String(err?.message || err).slice(0, 120), '⚠️');
-                        return;
-                    }
-                    btn.disabled = false;
+            const transBox = card.querySelector('.yzsv-fav-trans');
+            const transBtn = card.querySelector('[data-fav-trans]');
+            const showTrans = () => {
+                if (!transBox) return;
+                transBox.querySelector('.yzsv-fav-trans-t').textContent = rec.translation || '';
+                transBox.querySelector('.yzsv-fav-trans-from').textContent = transLabel(rec);
+                transBox.hidden = false;
+                if (transBtn) transBtn.textContent = '隐藏翻译';
+            };
+            // 翻译（再点一下 = 取消）；redo = 不用旧的，重新来
+            const runTranslate = async (btn, { redo = false } = {}) => {
+                if (btn._ctl) { btn._ctl.abort(); return; }
+                const old = btn.textContent;
+                const ctl = new AbortController();
+                btn._ctl = ctl;
+                btn.textContent = '翻译中…（再点取消）';
+                try {
+                    const r = await this.sv.translateText(rec.text, { speaker: rec.speaker || '', signal: ctl.signal, skipInline: redo && rec.transFrom === 'story' });
+                    rec.translation = r.text;
+                    rec.transFrom = r.from;
+                    await favStore.update(rec.id, { translation: r.text, transFrom: r.from });
+                    showTrans();
+                    if (r.from === 'web') toast('用的是网页机翻', '分析模型没连上，先用网页翻译顶着；可以点「✎ 改译文」自己改，或者连好模型后点「重新翻译」', '⚠️');
+                } catch (err) {
+                    if (ctl.signal.aborted) toast('已取消翻译', '', 'ℹ️');
+                    else toast('翻译失败', String(err?.message || err).slice(0, 120), '⚠️');
+                } finally {
+                    btn._ctl = null;
+                    if (btn.textContent.startsWith('翻译中')) btn.textContent = btn === transBtn ? (transBox && !transBox.hidden ? '隐藏翻译' : '查看翻译') : old;
                 }
-                box.textContent = rec.translation;
-                box.hidden = false;
-                btn.textContent = '隐藏翻译';
+            };
+            transBtn?.addEventListener('click', async () => {
+                if (!transBox) return;
+                if (transBtn._ctl) { transBtn._ctl.abort(); return; }
+                if (!transBox.hidden && rec.translation) { transBox.hidden = true; transBtn.textContent = '查看翻译'; return; }
+                // 旧收藏里存的是以前的网页机翻：正文里有原译文就换成原译文
+                if (rec.translation && !rec.transFrom) {
+                    const own = this.sv.inlineTranslation(rec.text);
+                    if (own) { rec.translation = own; rec.transFrom = 'story'; await favStore.update(rec.id, { translation: own, transFrom: 'story' }); }
+                }
+                if (rec.translation) { showTrans(); return; }
+                await runTranslate(transBtn);
+            });
+            card.querySelector('[data-trans-redo]')?.addEventListener('click', (e) => runTranslate(e.currentTarget, { redo: true }));
+            card.querySelector('[data-trans-edit]')?.addEventListener('click', async () => {
+                const v = await uiPrompt(`原文：${rec.text}`, rec.translation || '', { title: '改译文', multiline: true, okText: '保存' });
+                if (v === null) return;
+                const t = String(v).trim();
+                rec.translation = t;
+                rec.transFrom = t ? 'edited' : '';
+                await favStore.update(rec.id, { translation: t, transFrom: rec.transFrom });
+                if (t) showTrans();
+                else { transBox.hidden = true; if (transBtn) transBtn.textContent = '查看翻译'; }
             });
             card.querySelector('[data-fav-del]')?.addEventListener('click', async () => {
-                if (!window.confirm('删除这条收藏？')) return;
+                if (!(await uiConfirm('删除这条收藏？', { okText: '删除', danger: true }))) return;
                 await favStore.remove(rec.id);
                 // 同一句还有别的收藏版本时，正文里的 ★ 留着
                 const left = (await favStore.all()).some(x => x.speaker === rec.speaker && x.text === rec.text);
@@ -3433,12 +3721,12 @@ export class StoryVoiceApp {
             if (nb) nb.scrollTop = top;
             toast('已切换', `深度分析改用「${p.name}」`, '✅');
         });
-        root.querySelector('[data-deep-preset-save]')?.addEventListener('click', () => {
+        root.querySelector('[data-deep-preset-save]')?.addEventListener('click', async () => {
             const cur = this._collect();
             if (!cur.deepApiUrl) { toast('还没填地址', '先填好 API 地址和密钥再保存', '⚠️'); return; }
             let host = '';
             try { host = new URL(cur.deepApiUrl).hostname; } catch (e) { host = cur.deepApiUrl; }
-            const name = String(window.prompt('给这个接口起个名字', `${host}${cur.deepModel ? ' · ' + cur.deepModel : ''}`) || '').trim();
+            const name = String(await uiPrompt('给这个接口起个名字', `${host}${cur.deepModel ? ' · ' + cur.deepModel : ''}`) || '').trim();
             if (!name) return;
             const st = this.sv.getSettings();
             const list = st.deepPresets.filter(x => x.name !== name);
@@ -3450,12 +3738,12 @@ export class StoryVoiceApp {
             if (nb) nb.scrollTop = top;
             toast('已保存', `「${name}」，以后在下拉里一点就能切换`, '✅');
         });
-        root.querySelector('[data-deep-preset-del]')?.addEventListener('click', () => {
+        root.querySelector('[data-deep-preset-del]')?.addEventListener('click', async () => {
             const id = presetSel?.value;
             const st = this.sv.getSettings();
             const p = st.deepPresets.find(x => x.id === id);
             if (!p) { toast('先选一个', '在下拉里选中要删除的接口', '⚠️'); return; }
-            if (!window.confirm(`删除保存的接口「${p.name}」？`)) return;
+            if (!(await uiConfirm(`删除保存的接口「${p.name}」？`, { okText: '删除', danger: true }))) return;
             this.sv.saveSettings({ deepPresets: st.deepPresets.filter(x => x.id !== id) });
             const top = root.querySelector('.yzsv-body')?.scrollTop || 0;
             this.render();
@@ -3492,17 +3780,33 @@ export class StoryVoiceApp {
                 toast('拉取失败', String(err?.message || err).slice(0, 160), '⚠️');
             } finally { btn.disabled = false; }
         });
+        // 测试中再点一下 = 取消
         root.querySelector('#yzsv-api-test')?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
+            if (btn._ctl) { btn._ctl.abort(); return; }
             this.sv.saveSettings(this._collect());
-            btn.disabled = true;
-            btn.textContent = '测试中…';
+            const ctl = new AbortController();
+            btn._ctl = ctl;
+            btn.textContent = '测试中…（再点取消）';
+            const t0 = Date.now();
+            const tick = setInterval(() => { if (btn._ctl === ctl && !btn._got) btn.textContent = `测试中 ${Math.round((Date.now() - t0) / 1000)}s（再点取消）`; }, 1000);
+            btn._got = false;
             try {
-                const out = await this.sv._customChat([{ role: 'user', content: '只回复两个字：收到' }], { maxTokens: 20 });
-                toast('连接正常', `模型回复：${String(out).trim().slice(0, 40)}`, '✅');
+                // 会思考的模型（DeepSeek Pro / R 系列等）先想再答：输出长度给够，不然只想不答
+                const out = await this.sv._customChat([{ role: 'user', content: '只回复两个字：收到' }], {
+                    maxTokens: 2048, signal: ctl.signal,
+                    onProgress: (p) => { if (p.chars) { btn._got = true; btn.textContent = '收到回复…'; } else if (p.think) btn.textContent = `模型思考中 ${Math.round((Date.now() - t0) / 1000)}s（再点取消）`; }
+                });
+                const sec = Math.round((Date.now() - t0) / 100) / 10;
+                toast('连接正常', `用时 ${sec} 秒，模型回复：${String(out).trim().slice(0, 40)}${sec > 20 ? '（这个接口比较慢，深度分析一楼可能要几分钟，可以把下面的超时调大）' : ''}`, '✅');
             } catch (err) {
-                toast('连接失败', String(err?.message || err).slice(0, 160), '⚠️');
-            } finally { btn.disabled = false; btn.textContent = '测试连接'; }
+                if (ctl.signal.aborted) toast('已取消测试', '没有等它回完', 'ℹ️');
+                else toast('连接失败', String(err?.message || err).slice(0, 160), '⚠️');
+            } finally {
+                clearInterval(tick);
+                btn._ctl = null;
+                btn.textContent = '测试连接';
+            }
         });
         root.querySelectorAll('input.yzsv-input[data-k]').forEach(inp => inp.addEventListener('change', () => this.sv.saveSettings(this._collect())));
         root.querySelector('#yzsv-test')?.addEventListener('click', async () => {

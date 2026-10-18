@@ -4,6 +4,7 @@
 
 import { AMBIENCE_LABELS, startAmbience } from './ambience.js';
 import { fitTags, MM_EMOTION_TAGS, MM28_SOUND_TAGS } from './tts-adapt.js';
+import { uiConfirm } from './ui-dialog.js';
 
 const STYLE_ID = 'yzsv-editor-style';
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -149,8 +150,8 @@ function injectStyle() {
     const st = document.createElement('style');
     st.id = STYLE_ID;
     st.textContent = `
-.yzsv-ed-mask { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; }
-.yzsv-ed { width: min(560px, 100vw); max-height: 86vh; display: flex; flex-direction: column; background: #f6f6f9; color: #222; border-radius: 18px 18px 0 0; box-shadow: 0 -8px 30px rgba(0,0,0,.25); font-size: 14px; font-family: inherit; overflow: hidden; }
+.yzsv-ed-mask { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; z-index: 100000; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; }
+.yzsv-ed { width: 100%; max-width: 560px; max-height: 86vh; display: flex; flex-direction: column; background: #f6f6f9; color: #222; border-radius: 18px 18px 0 0; box-shadow: 0 -8px 30px rgba(0,0,0,.25); font-size: 14px; font-family: inherit; overflow: hidden; }
 @media (min-width: 700px) { .yzsv-ed-mask { align-items: center; } .yzsv-ed { border-radius: 18px; } }
 .yzsv-ed-head { padding: 14px 16px 10px; border-bottom: 1px solid #e6e6ee; background: #fff; }
 .yzsv-ed-head b { font-size: 16px; }
@@ -206,7 +207,7 @@ function injectStyle() {
 .yzsv-ed-play { background: #a18cd1; color: #fff; }
 .yzsv-ed-play.is-busy { background: #8a7bb0; }
 .yzsv-ed-reset { background: #f1f1f5; color: #666; }
-.yzsv-ed-foot { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid #e6e6ee; background: #fff; display: flex; gap: 8px; }
+.yzsv-ed-foot { padding: 10px 12px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid #e6e6ee; background: #fff; display: flex; gap: 8px; }
 .yzsv-ed-foot button { flex: 1; border: 0; border-radius: 11px; padding: 10px; font-size: 14px; cursor: pointer; font-family: inherit; }
 .yzsv-ed-foot .primary { background: #a18cd1; color: #fff; }
 .yzsv-ed-foot .ghost { background: #f1f1f5; color: #555; }
@@ -341,6 +342,11 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             <div class="yzsv-ed-body">${bars.map(lineHtml).join('')}</div>
             <div class="yzsv-ed-foot"><button type="button" class="ghost yzsv-ed-cancel">关闭</button><button type="button" class="primary yzsv-ed-save">${single ? '保存' : '保存全部'}</button></div>
         </div>`;
+    // 旧 WebView 不认 inset：尺寸再写一遍在行内，保证遮罩铺满屏幕
+    mask.style.top = '0';
+    mask.style.right = '0';
+    mask.style.bottom = '0';
+    mask.style.left = '0';
     document.body.appendChild(mask);
 
     const read = (row) => {
@@ -581,7 +587,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
         if (e.target === mask || e.target.closest('.yzsv-ed-close, .yzsv-ed-cancel')) {
             const rows = Array.from(mask.querySelectorAll('.yzsv-ed-line'));
             const pending = rows.some(r => r._dirty || (r._takes || []).some(Boolean));
-            if (pending && !window.confirm('这次改的还没保存。\n确定 = 保存（试听只留选中的那版）\n取消 = 不保存，改动和试听都丢掉')) { close(); return; }
+            if (pending && !(await uiConfirm('这次改的还没保存。试听只留选中的那版。', { okText: '保存', cancelText: '不保存' }))) { close(); return; }
             saveAll();
             close();
             return;

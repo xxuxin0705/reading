@@ -28,6 +28,17 @@ const storage = {
     getContextKey() { return String(ctx().chatId || ''); }
 };
 
+
+// 点击：click 和 touchend 都接（有的 WebView 吃掉 click），滑动不算点，一次点击只触发一次
+function onTap(el, fn) {
+    let last = 0, sx = 0, sy = 0, moved = false;
+    const fire = (e) => { if (Date.now() - last < 600) return; last = Date.now(); fn(e); };
+    el.addEventListener('touchstart', (e) => { const t = e.touches?.[0]; sx = t ? t.clientX : 0; sy = t ? t.clientY : 0; moved = false; }, { passive: true });
+    el.addEventListener('touchmove', (e) => { const t = e.touches?.[0]; if (t && Math.abs(t.clientX - sx) + Math.abs(t.clientY - sy) > 10) moved = true; }, { passive: true });
+    el.addEventListener('touchend', (e) => { if (moved) return; if (e.cancelable) e.preventDefault(); fire(e); });
+    el.addEventListener('click', fire);
+}
+
 // ---------- 设置窗口（朗读设置、角色音色库、收藏都画在这里）----------
 let overlay = null;
 const shell = {
@@ -58,21 +69,42 @@ const shell = {
     openLibrary(app) { renderLibrary(app, library); }
 };
 
-function openPanel() {
-    if (!overlay) {
-        overlay = document.createElement('div');
-        overlay.className = 'yzr-overlay';
-        overlay.innerHTML = '<div class="yzr-panel" role="dialog" aria-label="正文朗读"></div>';
-        overlay.addEventListener('click', (e) => { if (e.target === overlay) closePanel(); });
-        document.body.appendChild(overlay);
+// 窗口的尺寸直接写在行内：有的安卓 App（Silly 等）的 WebView 比较旧，不认 inset、min()，
+// 只靠 style.css 的话遮罩是 0 大小、面板跑到屏幕外面，看起来就是「点了没反应」
+function sizeOverlay() {
+    if (!overlay) return;
+    const small = window.innerWidth <= 520;
+    overlay.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;z-index:30000;background:rgba(0,0,0,.45);display:flex;align-items:${small ? 'stretch' : 'center'};justify-content:center;box-sizing:border-box;`;
+    const panel = overlay.querySelector('.yzr-panel');
+    if (panel) {
+        panel.style.cssText = small
+            ? `width:100%;height:100%;border-radius:0;overflow:hidden;background:#f6f6fa;position:relative;`
+            : `width:100%;max-width:440px;height:92vh;max-height:860px;border-radius:22px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.35);background:#f6f6fa;position:relative;`;
     }
-    overlay.hidden = false;
-    shell.rootEl = overlay.querySelector('.yzr-panel');
-    app.render('main');
+}
+
+function openPanel() {
+    try {
+        if (!overlay || !document.body.contains(overlay)) {
+            overlay = document.createElement('div');
+            overlay.className = 'yzr-overlay';
+            overlay.innerHTML = '<div class="yzr-panel" role="dialog" aria-label="正文朗读"></div>';
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) closePanel(); });
+            document.body.appendChild(overlay);
+            window.addEventListener('resize', () => { if (overlay && !overlay.hidden) sizeOverlay(); });
+        }
+        overlay.hidden = false;
+        sizeOverlay();
+        shell.rootEl = overlay.querySelector('.yzr-panel');
+        app.render('main');
+    } catch (e) {
+        console.error('[正文朗读] 打开设置失败:', e);
+        try { window.toastr?.error?.(String(e?.message || e).slice(0, 200), '正文朗读打不开'); } catch (err) { /* 忽略 */ }
+    }
 }
 
 function closePanel() {
-    if (overlay) overlay.hidden = true;
+    if (overlay) { overlay.hidden = true; overlay.style.display = 'none'; }
     try { app?._favAudio?.pause?.(); } catch (e) { /* 忽略 */ }
 }
 
@@ -96,10 +128,12 @@ function addWandItem() {
     item.className = 'list-group-item flex-container flexGap5 interactable';
     item.tabIndex = 0;
     item.innerHTML = '<div class="fa-solid fa-volume-high extensionsMenuExtensionButton"></div><span>正文朗读</span>';
-    item.addEventListener('click', () => {
-        openPanel();
-        document.getElementById('extensionsMenu')?.style && (document.getElementById('extensionsMenu').style.display = 'none');
-    });
+    const go = () => {
+        const menu2 = document.getElementById('extensionsMenu');
+        try { if (window.jQuery) window.jQuery(menu2).fadeOut?.(150); else if (menu2) menu2.style.display = 'none'; } catch (err) { if (menu2) menu2.style.display = 'none'; }
+        setTimeout(openPanel, 30);
+    };
+    onTap(item, go);
     menu.appendChild(item);
     return true;
 }
@@ -178,11 +212,12 @@ function addSettingsEntry() {
             <div class="inline-drawer-toggle inline-drawer-header"><b>🔊 正文朗读</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
             <div class="inline-drawer-content">
                 <div style="padding:6px 0;line-height:1.6;font-size:13px;opacity:.85">正文台词按情绪朗读：简单 / 深度 / 手动三种分析，Fish、MiniMax、OpenAI、豆包等渠道，逐句调演法、环境声、语音收藏。</div>
-                <div class="menu_button" id="yzr-open-btn"><i class="fa-solid fa-volume-high"></i> 打开正文朗读设置</div>
+                <div class="menu_button" id="yzr-open-btn" role="button" tabindex="0" style="display:inline-flex;align-items:center;justify-content:center;width:auto;max-width:100%;white-space:nowrap;padding:6px 14px;margin:4px 0;"><i class="fa-solid fa-volume-high" style="margin-right:6px;"></i>打开正文朗读设置</div>
             </div>
         </div>`;
     host.appendChild(box);
-    box.querySelector('#yzr-open-btn').addEventListener('click', openPanel);
+    const open = box.querySelector('#yzr-open-btn');
+    onTap(open, (e) => { e?.stopPropagation?.(); openPanel(); });
     return true;
 }
 

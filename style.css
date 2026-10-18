@@ -1,8 +1,8 @@
 /* 正文朗读：设置窗口 */
-.yzr-overlay { position: fixed; inset: 0; z-index: 30000; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+.yzr-overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; z-index: 30000; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
 .yzr-overlay[hidden] { display: none !important; }
-.yzr-panel { width: min(440px, 100vw); height: min(860px, 92vh); border-radius: 22px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.35); background: #f6f6fa; }
-@media (max-width: 520px) { .yzr-panel { width: 100vw; height: 100%; border-radius: 0; } .yzr-overlay { align-items: stretch; } }
+.yzr-panel { width: 100%; max-width: 440px; height: 92vh; max-height: 860px; border-radius: 22px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.35); background: #f6f6fa; }
+@media (max-width: 520px) { .yzr-panel { width: 100%; max-width: none; height: 100%; max-height: none; border-radius: 0; } .yzr-overlay { align-items: stretch; } }
 .yzr-panel .yzsv-head { height: 56px; padding: 8px 10px; }
 /* 标题栏：左（返回 / 占位）· 中（标题）· 右（关闭），三栏固定，不会互相挤 */
 .yzr-panel .yzsv-head.yzr-head { display: grid; grid-template-columns: 36px minmax(0, 1fr) 36px; align-items: center; gap: 6px; }
