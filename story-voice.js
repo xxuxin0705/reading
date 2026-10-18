@@ -3168,7 +3168,7 @@ export class StoryVoiceApp {
                                     <button type="button" data-think="1" class="${s.deepThink ? 'is-on' : ''}">开（慢）</button>
                                 </div>
                                 <input type="hidden" data-k="deepThink" value="${s.deepThink ? '1' : '0'}">
-                                <div class="yzsv-note" style="margin-top:6px;">DeepSeek Pro 这类模型默认先想很久再写，免费中转站常常等不到它开口就把连接断了，于是「没有返回内容」。关掉后会请接口跳过思考（接口不认会自动去掉）；还是不行就换不带思考的模型（名字里有 chat / flash / v3 的）。</div>
+                                <div class="yzsv-note" style="margin-top:6px;">关掉后会请接口跳过思考</div>
                             </div>
                         </div>
                         <div class="yzsv-field"><label>分析超时（秒）</label><div class="yzsv-note" style="margin:-2px 0 6px;">自定义 API：多久没收到新内容才算超时（模型在思考也算有内容）；其他连接：整次分析的总时长。</div><input class="yzsv-input" data-k="deepTimeout" type="number" min="30" max="600" value="${esc(s.deepTimeout)}"></div>
