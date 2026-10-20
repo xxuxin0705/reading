@@ -840,7 +840,7 @@ export class StoryVoice {
             if (hit) v = entry.lines[hit];
         }
         if (!v) return null;
-        return { s: v.s || '', p: v.pace || 'normal', t: Number(v.t) || 0, tone: entry.tone || '', role: v.role || '', why: v.why || '', amb: v.amb || '' };
+        return { s: v.s || '', p: v.pace || 'normal', paceManual: !!v.paceManual, t: Number(v.t) || 0, tone: entry.tone || '', role: v.role || '', why: v.why || '', amb: v.amb || '' };
     }
 
     // ---------- 设置 ----------
@@ -1962,16 +1962,16 @@ export class StoryVoice {
         const lang = String(obj.ttsLanguageBoost || 'auto').trim() || 'auto';
         const has = Object.entries(voices).filter(([, v]) => String(v || '').trim());
         const st = this.getSettings();
-        if (st.channelMode === 'unified' && String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider] || '').trim()) return { voice: String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider]).trim(), provider: st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider, languageBoost: lang };
+        if (st.channelMode === 'unified' && String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider] || '').trim()) return { voice: String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider]).trim(), provider: st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null };
         // 统一用一个渠道：这个人没填这个渠道的音色，就用这个渠道的默认音色（别把别家的音色 ID 发过去，会报 voice id not exist）
         if (st.channelMode === 'unified') {
-            return (has.length || String(obj.ttsVoice || '').trim()) ? { voice: '', provider: globalProvider, languageBoost: lang, fallbackVoice: true } : null;
+            return (has.length || String(obj.ttsVoice || '').trim()) ? { voice: '', provider: globalProvider, languageBoost: lang, fallbackVoice: true, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null } : null;
         }
         // 每个人按自己配的：他填了哪个渠道的音色就走哪个渠道
         const provider = bound || globalProvider;
-        if (String(voices[provider] || '').trim()) return { voice: String(voices[provider]).trim(), provider, languageBoost: lang };
-        if (has.length) return { voice: String(has[0][1]).trim(), provider: has[0][0], languageBoost: lang };
-        if (String(obj.ttsVoice || '').trim()) return { voice: String(obj.ttsVoice).trim(), provider, languageBoost: lang };
+        if (String(voices[provider] || '').trim()) return { voice: String(voices[provider]).trim(), provider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null };
+        if (has.length) return { voice: String(has[0][1]).trim(), provider: has[0][0], languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null };
+        if (String(obj.ttsVoice || '').trim()) return { voice: String(obj.ttsVoice).trim(), provider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null };
         return null;
     }
 
@@ -2049,6 +2049,18 @@ export class StoryVoice {
     async _voiceFor(speaker = '') {
         if (String(speaker || '').trim()) await this._getWechatData();
         return this._voiceForSync(speaker);
+    }
+
+    // 固定语速属于说话人而不是语音渠道，所有播放入口统一使用。
+    // paceManual 只由 🎭 调试中明确点选语速产生，一键演法及自动分析不能覆盖固定值。
+    fixedPace(speaker = '') {
+        const hit = this._findWechatVoice(speaker);
+        return hit?.voiceInfo?.fixedSpeed || null;
+    }
+
+    playbackRate(speaker = '', pace = 'normal', manual = false) {
+        const selected = manual ? pace : (this.fixedPace(speaker) || pace);
+        return PACE_SPEED[selected] || 1;
     }
 
     // 缓存按「平台+音色+文本」区分：联系人音色改了，点 ▶ 就会自动重新生成
@@ -2166,7 +2178,7 @@ export class StoryVoice {
         if (deep) {
             const scripted = !!deep.s;
             const parts = splitSpeech(scripted ? deep.s : text);
-            return { vi: { ...voice, cue: '', deep: { scripted, t: deep.t, p: deep.p, tone: deep.tone } }, parts };
+            return { vi: { ...voice, cue: '', deep: { scripted, t: deep.t, p: deep.p, paceManual: !!deep.paceManual, tone: deep.tone } }, parts };
         }
         return { vi: { ...voice, cue: this.getSettings().analysisMode === 'simple' ? (cue || '') : '' }, parts: splitSpeech(text) };
     }
@@ -2243,7 +2255,7 @@ export class StoryVoice {
             }
             const blobs = await Promise.all(joined.map(u => fetch(u).then(r => r.blob())));
             const blob = blobs.length === 1 ? blobs[0] : new Blob(blobs, { type: blobs[0]?.type || 'audio/mpeg' });
-            const rec = await this.saveFavorite({ text, speaker, blob, rate: PACE_SPEED[deep?.p] || 1, sig });
+            const rec = await this.saveFavorite({ text, speaker, blob, rate: this.playbackRate(speaker, deep?.p, !!deep?.paceManual), sig });
             if (rec && !rec._dup) this._askTags(rec, bar.querySelector('.yzsv-play'));
         } catch (err) {
             this._toast('收藏失败', String(err?.message || err).slice(0, 120), 'error');
@@ -2535,7 +2547,7 @@ export class StoryVoice {
     // ---------- 🎭 面板的试听对比：按草稿生成一版（不保存），可以反复生成、来回对比，保存时只留选中的那版 ----------
     takeSig(speaker = '', s = '', t = 0, p = 'normal') { return `${speaker}\u0001${s || ''}\u0001${Number(t) || 0}\u0001${p || 'normal'}`; }
 
-    async synthDraft(bar, { speaker = '', script = '', t = 0, pace = 'normal' } = {}, { signal } = {}) {
+    async synthDraft(bar, { speaker = '', script = '', t = 0, pace = 'normal', paceManual = false } = {}, { signal } = {}) {
         const text = bar.dataset.text || '';
         const s = script && script !== text ? script : '';
         const vi0 = await this._voiceFor(speaker);
@@ -2545,7 +2557,7 @@ export class StoryVoice {
         // 复制一份自己的音频：缓存满了被回收也不影响对比
         const own = [];
         for (const u of joined) { try { own.push(URL.createObjectURL(await (await fetch(u)).blob())); } catch (e) { own.push(u); } }
-        return { urls: own, rate: PACE_SPEED[pace] || 1, sig: this.takeSig(speaker, s, t, pace) };
+        return { urls: own, rate: this.playbackRate(speaker, pace, paceManual), sig: this.takeSig(speaker, s, t, pace) };
     }
 
     async playTake(urls = [], rate = 1, { amb = '' } = {}) {
@@ -2663,7 +2675,7 @@ export class StoryVoice {
             const fk = `${bar.dataset.mesid}:${bar.dataset.line}`;
             const fresh = !!this._forceFresh?.has(fk);
             if (fresh) this._forceFresh.delete(fk);
-            if (parts.length) queue.push({ bar, parts, voice: vi, rate: PACE_SPEED[vi.deep?.p] || 1, fresh });
+            if (parts.length) queue.push({ bar, parts, voice: vi, rate: this.playbackRate(sp, vi.deep?.p, !!this._barDeep(bar)?.paceManual), fresh });
         }
         const jobs = new Array(queue.length);
         const start = (i) => {
