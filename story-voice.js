@@ -9,7 +9,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, DEEP_SCHEMA, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.3.7'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.3.2'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -197,8 +197,6 @@ export class StoryVoice {
         this.playing = null; // { btn, queue, stop }
         this._timers = new Map();
         this._installed = false;
-        // 只跟踪本实例真实注册过的事件，不能信 DOM 上的旧版「已绑定」标记。
-        this._boundTextBoxes = new WeakSet();
         this.speakerOverrides = this._loadOverrides();
         this._genderOf = this._loadGenders();
         this._speakerMemo = new Map();
@@ -1075,7 +1073,7 @@ export class StoryVoice {
             ${this.getSettings().npcMode === 'npc' ? `<div class="yzsv-pop-names"><button type="button" data-gender="m">按男声 NPC 读</button><button type="button" data-gender="f">按女声 NPC 读</button></div>` : ''}
             <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>
             <div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 调这句的演法</button><button type="button" data-fav="1">${this._isFav(bar.dataset.speaker || '', bar.dataset.text || '') ? '⭐ 再收藏现在这一版' : '⭐ 收藏这句语音'}</button></div>`;
-        document.body.appendChild(pop);
+        (document.documentElement || document.body).appendChild(pop);
         const r = btn.getBoundingClientRect();
         const w = Math.min(280, window.innerWidth - 16);
         pop.style.width = `${w}px`;
@@ -1588,9 +1586,8 @@ export class StoryVoice {
     }
 
     _bindBox(box) {
-        if (this._boundTextBoxes.has(box)) return;
-        this._boundTextBoxes.add(box);
-        box.dataset.yzsvBound = '1'; // 兼容旧样式/旧标记，但不再作为事件绑定依据。
+        if (box.dataset.yzsvBound === '1') return;
+        box.dataset.yzsvBound = '1';
         // 长按 ↻ 选说话人
         let pressTimer = null;
         const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };
@@ -2286,7 +2283,7 @@ export class StoryVoice {
         pop.innerHTML = `<div class="yzsv-pop-title">⭐ 已收藏，加个标签？<span>可以跳过</span></div>
             <div class="yzsv-pop-names">${known.map(t => `<button type="button" data-tag="${esc(t)}">${esc(t)}</button>`).join('')}</div>
             <div class="yzsv-tagrow"><input type="text" placeholder="新标签，比如：名场面、哭腔、甜" enterkeyhint="done"><button type="button" data-ok>好</button></div>`;
-        document.body.appendChild(pop);
+        (document.documentElement || document.body).appendChild(pop);
         const w = Math.min(300, window.innerWidth - 16);
         pop.style.width = `${w}px`;
         const r = anchor?.getBoundingClientRect?.() || { left: window.innerWidth / 2, width: 0, bottom: window.innerHeight / 3, top: window.innerHeight / 3 };

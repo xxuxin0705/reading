@@ -35,7 +35,7 @@ function open({ title = '', message = '', input = null, okText = '确定', cance
         row.appendChild(ok);
         box.appendChild(row);
         mask.appendChild(box);
-        document.body.appendChild(mask);
+        (document.documentElement || document.body).appendChild(mask);
         let done = false;
         const finish = (v) => { if (done) return; done = true; mask.remove(); resolve(v); };
         ok.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); finish(inp ? inp.value : true); });

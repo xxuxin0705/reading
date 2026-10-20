@@ -354,7 +354,7 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
     mask.style.right = '0';
     mask.style.bottom = '0';
     mask.style.left = '0';
-    document.body.appendChild(mask);
+    (document.documentElement || document.body).appendChild(mask);
 
     const read = (row) => {
         const seg = (k) => row.querySelector(`.yzsv-ed-seg[data-k="${k}"] button.is-on`)?.dataset.v;
