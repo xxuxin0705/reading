@@ -2054,13 +2054,29 @@ export class StoryVoice {
     // 固定语速属于说话人而不是语音渠道，所有播放入口统一使用。
     // paceManual 只由 🎭 调试中明确点选语速产生，一键演法及自动分析不能覆盖固定值。
     fixedPace(speaker = '') {
-        const hit = this._findWechatVoice(speaker);
-        return hit?.voiceInfo?.fixedSpeed || null;
+        // 语速是独立设置，不要求角色已经配置音色。查找失败时绝不阻断播放或面板。
+        try {
+            const n = String(speaker || '').trim();
+            if (!n) return null;
+            const source = this.voiceSource;
+            if (source?.active) {
+                const people = source.active();
+                const entry = people.find(x => x.name === n || (x.aliases || []).includes(n))
+                    || people.find(x => [x.name, ...(x.aliases || [])].some(a => a && a.length >= 2 && n.length >= 2 && (a.includes(n) || n.includes(a))));
+                if (entry?.fixedSpeedEnabled && Object.prototype.hasOwnProperty.call(PACE_SPEED, entry.fixedSpeed)) return entry.fixedSpeed;
+            }
+            const hit = this._findWechatVoice(n);
+            const value = hit?.voiceInfo?.fixedSpeed;
+            return value && Object.prototype.hasOwnProperty.call(PACE_SPEED, value) ? value : null;
+        } catch (error) {
+            console.warn('[正文朗读] 读取角色固定语速失败，恢复自动语速:', error);
+            return null;
+        }
     }
 
     playbackRate(speaker = '', pace = 'normal', manual = false) {
         const selected = manual ? pace : (this.fixedPace(speaker) || pace);
-        return PACE_SPEED[selected] || 1;
+        return Object.prototype.hasOwnProperty.call(PACE_SPEED, selected) ? PACE_SPEED[selected] : 1;
     }
 
     // 缓存按「平台+音色+文本」区分：联系人音色改了，点 ▶ 就会自动重新生成
