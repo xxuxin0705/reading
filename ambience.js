@@ -692,7 +692,7 @@ function startSynthAmbience(kind, volume = 0.3) {
 const RECORDED = new Set(["icewalk", "cheering", "steadyrain", "scifi", "thunderclip", "heartbeat", "outdoors", "windclip", "drops", "leaves", "strolling", "newspaper", "snowstorm", "briskwalk", "cicadas", "cat", "horse", "stream", "bell", "writing", "techdata", "applause", "pouring", "fingersnap", "office", "typing", "camera", "running", "fireworksclip", "busycity", "citytraffic", "breathing", "fastheartbeat", "dog", "bicycle", "basketball", "swimming"]);
 const AUDIO_BASE = new URL('./audio/', import.meta.url);
 
-function startRecordedAmbienceElement(kind, volume = 0.3) {
+function startRecordedAmbience(kind, volume = 0.3) {
     const audio = new Audio(new URL(`${kind}.mp3`, AUDIO_BASE).href);
     audio.preload = 'auto';
     audio.loop = true;
@@ -737,63 +737,6 @@ function startRecordedAmbienceElement(kind, volume = 0.3) {
                 else { audio.pause(); audio.removeAttribute('src'); audio.load(); audio.removeEventListener('error', onError); }
             };
             frame = requestAnimationFrame(fadeOut);
-        }
-    };
-}
-
-
-// iPhone 上同一页面里第二个 <audio> 一开始出声，正在朗读的那个就会被系统暂停（朗读“播一秒就卡住”）。
-// 所以录音环境声改走 WebAudio：解码后用 AudioBufferSource 循环，和朗读的 <audio> 可以同时出声。
-const DECODED = new Map();
-function decodeRecorded(c, kind) {
-    if (DECODED.has(kind)) return DECODED.get(kind);
-    const task = fetch(new URL(`${kind}.mp3`, AUDIO_BASE).href)
-        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
-        .then(buf => new Promise((resolve, reject) => {
-            // 老版 Safari 只认回调写法
-            const p = c.decodeAudioData(buf, resolve, reject);
-            if (p && p.then) p.then(resolve, reject);
-        }));
-    task.catch(() => DECODED.delete(kind));
-    DECODED.set(kind, task);
-    return task;
-}
-
-function startRecordedAmbience(kind, volume = 0.3) {
-    const c = ctx();
-    if (!c) return startRecordedAmbienceElement(kind, volume);
-    const target = Math.max(0, Math.min(1, Number(volume) || 0)) * 0.52;
-    const gain = c.createGain();
-    gain.gain.value = 0;
-    gain.connect(c.destination);
-    let src = null;
-    let stopped = false;
-    decodeRecorded(c, kind).then(buffer => {
-        if (stopped) return;
-        src = c.createBufferSource();
-        src.buffer = buffer;
-        src.loop = true;
-        src.connect(gain);
-        src.start();
-        gain.gain.setValueAtTime(0, c.currentTime);
-        gain.gain.linearRampToValueAtTime(target, c.currentTime + 1.1);
-    }).catch(err => console.warn('[环境声] 录音解码失败：', kind, err));
-    return {
-        kind,
-        stop(fade = 0.8) {
-            if (stopped) return;
-            stopped = true;
-            const t = c.currentTime;
-            const d = Math.max(0.02, Number(fade) || 0);
-            try {
-                gain.gain.cancelScheduledValues(t);
-                gain.gain.setValueAtTime(gain.gain.value, t);
-                gain.gain.linearRampToValueAtTime(0, t + d);
-            } catch (_e) { /* ignore */ }
-            setTimeout(() => {
-                try { src?.stop(); } catch (_e) { /* ignore */ }
-                try { src?.disconnect(); gain.disconnect(); } catch (_e) { /* ignore */ }
-            }, d * 1000 + 60);
         }
     };
 }

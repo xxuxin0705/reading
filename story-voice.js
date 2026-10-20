@@ -2717,7 +2717,6 @@ export class StoryVoice {
             }
         } catch (err) {
             if (abort.signal.aborted || err?.name === 'AbortError') return;
-            if (err?.message === '播放被打断') return; // 已经单独提示过
             console.warn('[正文朗读] 失败:', err);
             this._toast('朗读失败', String(err?.message || err).slice(0, 160));
         } finally {
@@ -2797,29 +2796,6 @@ export class StoryVoice {
             }, 400);
             a.onended = done;
             a.onerror = () => fail();
-            // 被别的声音打断（iPhone 上别的 <audio> 一播放，这里就会被系统暂停）：
-            // 以前这里没人管，Promise 永远等不到结束，朗读就“卡住”了。现在先自动续播，连续被打断就停下并提示。
-            let resumes = 0;
-            a.onpause = () => {
-                if (finished || this.playing !== run) return;
-                if (a.ended || (a.duration && a.currentTime >= a.duration - 0.25)) return done();
-                if (resumes++ < 3) {
-                    setTimeout(() => {
-                        if (!finished && this.playing === run && a.paused) {
-                            const again = a.play();
-                            if (again && again.catch) again.catch(() => {});
-                        }
-                    }, 300);
-                    return;
-                }
-                const recent = window.__yzMediaWatch?.recent?.(3000) || [];
-                const other = [...recent].reverse().find(x => x.type === 'play');
-                console.warn('[正文朗读] 播放被反复打断', recent);
-                this._toast('朗读被打断', other?.from
-                    ? `「${other.from}」同时在播放声音，把朗读挤掉了，可以先关掉它再试`
-                    : '播放被其他声音反复打断了（比如后台保活类插件），可以先关掉再试', 'warning');
-                fail(new Error('播放被打断'));
-            };
             a.preload = 'auto';
             a.src = url;
             // 换 src 会把速度重置，所以每次都在 src 之后设；保持音调不变（不会变成花栗鼠 / 低沉）
