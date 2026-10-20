@@ -1,3 +1,4 @@
+import { pinFullscreen } from './pin.js';
 // 正文朗读 · 页面内的确认框 / 输入框
 // 有的安卓壳（Silly 等 App 的 WebView）不支持 window.confirm / prompt：直接返回取消，按钮就像没反应。
 // 这里自己画一个，样式全写在行内，不依赖新版浏览器的 CSS（inset、min() 等）。
@@ -36,6 +37,7 @@ function open({ title = '', message = '', input = null, okText = '确定', cance
         box.appendChild(row);
         mask.appendChild(box);
         (document.documentElement || document.body).appendChild(mask);
+        pinFullscreen(mask, 'z-index:2147483000;');
         let done = false;
         const finish = (v) => { if (done) return; done = true; mask.remove(); resolve(v); };
         ok.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); finish(inp ? inp.value : true); });

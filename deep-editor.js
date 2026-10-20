@@ -5,6 +5,7 @@
 import { AMBIENCE_LABELS, startAmbience } from './ambience.js';
 import { fitTags, MM_EMOTION_TAGS, MM28_SOUND_TAGS } from './tts-adapt.js';
 import { uiConfirm } from './ui-dialog.js';
+import { pinFullscreen, reportIfHidden } from './pin.js';
 
 const STYLE_ID = 'yzsv-editor-style';
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -256,7 +257,19 @@ function injectStyle() {
  * @param {number} mesid
  * @param {string|number} focusLine  打开后滚到这一句
  */
-export function openDeepEditor(sv, mesid, focusLine = null, { single = false } = {}) {
+export function openDeepEditor(sv, mesid, focusLine = null, options = {}) {
+    try {
+        return openDeepEditorInner(sv, mesid, focusLine, options);
+    } catch (e) {
+        console.error('[正文朗读] 打开演法编辑失败:', e);
+        const text = String(e?.message || e).slice(0, 200);
+        if (window.toastr?.error) window.toastr.error(text, '逐句调整打不开');
+        else { try { window.alert(`逐句调整打不开：${text}`); } catch (err) { /* 忽略 */ } }
+        return null;
+    }
+}
+
+function openDeepEditorInner(sv, mesid, focusLine = null, { single = false } = {}) {
     injectStyle();
     document.querySelectorAll('.yzsv-ed-mask').forEach(n => n.remove());
     const ctx = window.SillyTavern?.getContext?.();
@@ -350,11 +363,9 @@ export function openDeepEditor(sv, mesid, focusLine = null, { single = false } =
             <div class="yzsv-ed-foot"><button type="button" class="ghost yzsv-ed-cancel">关闭</button><button type="button" class="primary yzsv-ed-save">${single ? '保存' : '保存全部'}</button></div>
         </div>`;
     // 旧 WebView 不认 inset：尺寸再写一遍在行内，保证遮罩铺满屏幕
-    mask.style.top = '0';
-    mask.style.right = '0';
-    mask.style.bottom = '0';
-    mask.style.left = '0';
-    document.body.appendChild(mask);
+    (document.documentElement || document.body).appendChild(mask);
+    pinFullscreen(mask, 'z-index:2147483000;');
+    reportIfHidden(mask, '演法编辑窗口');
 
     const read = (row) => {
         const seg = (k) => row.querySelector(`.yzsv-ed-seg[data-k="${k}"] button.is-on`)?.dataset.v;

@@ -1073,7 +1073,7 @@ export class StoryVoice {
             ${this.getSettings().npcMode === 'npc' ? `<div class="yzsv-pop-names"><button type="button" data-gender="m">按男声 NPC 读</button><button type="button" data-gender="f">按女声 NPC 读</button></div>` : ''}
             <div class="yzsv-pop-empty">选好后会按这个人的音色重新生成并播放</div>
             <div class="yzsv-pop-names"><button type="button" data-edit="1">🎭 调这句的演法</button><button type="button" data-fav="1">${this._isFav(bar.dataset.speaker || '', bar.dataset.text || '') ? '⭐ 再收藏现在这一版' : '⭐ 收藏这句语音'}</button></div>`;
-        document.body.appendChild(pop);
+        (document.documentElement || document.body).appendChild(pop);
         const r = btn.getBoundingClientRect();
         const w = Math.min(280, window.innerWidth - 16);
         pop.style.width = `${w}px`;
@@ -2295,7 +2295,7 @@ export class StoryVoice {
         pop.innerHTML = `<div class="yzsv-pop-title">⭐ 已收藏，加个标签？<span>可以跳过</span></div>
             <div class="yzsv-pop-names">${known.map(t => `<button type="button" data-tag="${esc(t)}">${esc(t)}</button>`).join('')}</div>
             <div class="yzsv-tagrow"><input type="text" placeholder="新标签，比如：名场面、哭腔、甜" enterkeyhint="done"><button type="button" data-ok>好</button></div>`;
-        document.body.appendChild(pop);
+        (document.documentElement || document.body).appendChild(pop);
         const w = Math.min(300, window.innerWidth - 16);
         pop.style.width = `${w}px`;
         const r = anchor?.getBoundingClientRect?.() || { left: window.innerWidth / 2, width: 0, bottom: window.innerHeight / 3, top: window.innerHeight / 3 };
