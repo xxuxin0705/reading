@@ -122,8 +122,6 @@ export class VoiceLibrary {
             voiceAliases: x.aliases || [],
             ttsVoices: x.voices || {},
             ttsProvider: x.provider || '',
-            fixedSpeedEnabled: !!x.fixedSpeedEnabled,
-            fixedSpeed: x.fixedSpeed || 'normal',
             ttsLanguageBoost: x.lang || 'auto',
             gender: (x.isNpc ?? !!x.gender) ? (x.gender === 'm' ? 'male' : x.gender === 'f' ? 'female' : '') : '',
             nameReadings: x.readings || []
@@ -428,18 +426,6 @@ function editEntry(app, lib, x, preset = {}) {
                     </details>
                 </div>
 
-                <div class="yzsv-sec">常驻语速</div>
-                <div class="yzsv-card pad">
-                    <label style="display:flex;align-items:center;gap:9px;font-size:14px"><input type="checkbox" data-f="fixedSpeedEnabled" ${e.fixedSpeedEnabled ? 'checked' : ''}> 启用固定语速</label>
-                    <div class="yzsv-field" data-fixed-speed-box style="margin-top:12px;${e.fixedSpeedEnabled ? '' : 'display:none;'}">
-                        <label>这个人的默认语速</label>
-                        <select class="yzsv-input" data-f="fixedSpeed">
-                            ${[['very_slow','非常慢 · 0.72×'],['slow','慢 · 0.86×'],['normal','正常 · 1.00×'],['fast','快 · 1.18×'],['very_fast','非常快 · 1.38×']].map(([k,l]) => `<option value="${k}" ${(e.fixedSpeed || 'normal') === k ? 'selected' : ''}>${l}</option>`).join('')}
-                        </select>
-                    </div>
-                    <div class="yzsv-note" style="margin-top:8px">开启后，普通朗读、深度分析和一键演法都按这里的语速播放；在 🎭 调试中手动选择其他语速时，仅覆盖那一句。</div>
-                </div>
-
                 <div class="yzsv-sec">标签</div>
                 <div class="yzsv-card pad">
                     <div class="yzsv-chips-mini" id="yzr-tags" style="margin-top:0">${tagChips()}</div>
@@ -475,9 +461,6 @@ function editEntry(app, lib, x, preset = {}) {
         if (kind === 'user' && !nameInp.value.trim() && userName) nameInp.value = userName;
         applyKind();
     }));
-    root.querySelector('[data-f="fixedSpeedEnabled"]')?.addEventListener('change', ev => {
-        root.querySelector('[data-fixed-speed-box]').style.display = ev.target.checked ? '' : 'none';
-    });
     // 标签
     const tagBox = root.querySelector('#yzr-tags');
     tagBox?.addEventListener('click', (ev) => {
@@ -531,8 +514,6 @@ function editEntry(app, lib, x, preset = {}) {
         const provSel = root.querySelector('[data-f="provider"]');
         if (provSel) e.provider = provSel.value || '';
         e.readings = Array.from(root.querySelectorAll('.yzrd-row')).map(r => ({ text: r.querySelector('[data-rd="text"]').value.trim(), reading: r.querySelector('[data-rd="reading"]').value.trim() })).filter(r => r.text && r.reading);
-        e.fixedSpeedEnabled = !!root.querySelector('[data-f="fixedSpeedEnabled"]')?.checked;
-        e.fixedSpeed = root.querySelector('[data-f="fixedSpeed"]')?.value || 'normal';
         e.tags = [...new Set(e.tags)];
         if (e.isUser) {
             // 一个用户人设只有一个「我」：换成这次保存的
