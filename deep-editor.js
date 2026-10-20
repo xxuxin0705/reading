@@ -323,7 +323,7 @@ function openDeepEditorInner(sv, mesid, focusLine = null, { single = false } = {
         const v = entry.lines?.[text] || {};
         const script = v.s || (v.edited ? text : cueScript(bar.dataset.cue, text));
         const t = Number(v.t) || 2;
-        const pace = v.paceManual ? (v.pace || 'normal') : (sv.fixedPace(bar.dataset.speaker || '') || v.pace || 'normal');
+        const pace = sv.manualPace(bar.dataset.speaker || '', v) ? (v.pace || 'normal') : (sv.fixedPace(bar.dataset.speaker || '') || v.pace || 'normal');
         return `
         <div class="yzsv-ed-line${v.edited ? ' is-edited' : ''}" data-line="${esc(bar.dataset.line)}" data-text="${esc(text)}">
             <div class="yzsv-ed-top"><span class="yzsv-ed-no">#${i + 1}</span><input class="yzsv-ed-spk" value="${esc(bar.dataset.speaker || v.role || '')}" title="说话人（改了会按这个人的音色读）"><button type="button" class="yzsv-ed-fold" title="收起这一句">收起 ▴</button></div>
@@ -386,7 +386,7 @@ function openDeepEditorInner(sv, mesid, focusLine = null, { single = false } = {
         const r = read(row);
         const old = entry.lines[r.text] || {};
         const script = r.script && r.script !== r.text ? r.script : '';
-        const next = { ...old, role: r.speaker || old.role || '', pace: r.pace, paceManual: !!row._paceManual, t: r.t, s: script, amb: r.amb, ambSet: true, preset: row._preset !== undefined ? row._preset : (old.preset || '') };
+        const next = { ...old, role: r.speaker || old.role || '', pace: r.pace, paceManual: !!row._paceManual, paceManualAt: row._paceManual ? (row._paceManualAt || Date.now()) : 0, t: r.t, s: script, amb: r.amb, ambSet: true, preset: row._preset !== undefined ? row._preset : (old.preset || '') };
         if (!r.amb) delete next.amb;
         const changed = ['role', 'pace', 'paceManual', 't', 's', 'amb'].some(k => String(next[k] ?? '') !== String(old[k] ?? ''));
         if (changed || !old.edited) { next.edited = true; entry.lines[r.text] = next; row.classList.add('is-edited'); }
@@ -425,9 +425,12 @@ function openDeepEditorInner(sv, mesid, focusLine = null, { single = false } = {
     });
     // 动过哪句就记哪句（输入、点选项、改说话人）
     mask.querySelectorAll('.yzsv-ed-line').forEach(row => {
-        row._paceManual = !!entry.lines?.[row.dataset.text]?.paceManual;
+        const saved = entry.lines?.[row.dataset.text] || {};
+        const spk = row.querySelector('.yzsv-ed-spk')?.value.trim() || '';
+        row._paceManual = sv.manualPace(spk, saved);
+        row._paceManualAt = row._paceManual ? (Number(saved.paceManualAt) || 0) : 0;
         row.addEventListener('input', () => { row._dirty = true; });
-        row.addEventListener('click', (e) => { if (e.target.closest('.yzsv-ed-seg[data-k="pace"] button')) row._paceManual = true; if (e.target.closest('button') && !e.target.closest('.yzsv-ed-tabs, .yzsv-ed-play, .yzsv-ed-takes, .yzsv-ed-fold')) row._dirty = true; });
+        row.addEventListener('click', (e) => { if (e.target.closest('.yzsv-ed-seg[data-k="pace"] button')) { row._paceManual = true; row._paceManualAt = Date.now(); } if (e.target.closest('button') && !e.target.closest('.yzsv-ed-tabs, .yzsv-ed-play, .yzsv-ed-takes, .yzsv-ed-fold')) row._dirty = true; });
     });
     // 每句：记住说话人的渠道，实时预览发过去的内容；改了说话人就换成那个人渠道的选项
     const prevHtml = (row) => {

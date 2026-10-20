@@ -124,6 +124,7 @@ export class VoiceLibrary {
             ttsProvider: x.provider || '',
             fixedSpeedEnabled: !!x.fixedSpeedEnabled,
             fixedSpeed: x.fixedSpeed || 'normal',
+            fixedSpeedAt: Number(x.fixedSpeedAt) || 0,
             ttsLanguageBoost: x.lang || 'auto',
             gender: (x.isNpc ?? !!x.gender) ? (x.gender === 'm' ? 'male' : x.gender === 'f' ? 'female' : '') : '',
             nameReadings: x.readings || []
@@ -531,8 +532,11 @@ function editEntry(app, lib, x, preset = {}) {
         const provSel = root.querySelector('[data-f="provider"]');
         if (provSel) e.provider = provSel.value || '';
         e.readings = Array.from(root.querySelectorAll('.yzrd-row')).map(r => ({ text: r.querySelector('[data-rd="text"]').value.trim(), reading: r.querySelector('[data-rd="reading"]').value.trim() })).filter(r => r.text && r.reading);
+        const prevFixed = e.fixedSpeedEnabled ? (e.fixedSpeed || 'normal') : '';
         e.fixedSpeedEnabled = !!root.querySelector('[data-f="fixedSpeedEnabled"]')?.checked;
         e.fixedSpeed = root.querySelector('[data-f="fixedSpeed"]')?.value || 'normal';
+        // 固定语速改了（打开 / 换档）就记下时间：在这之前 🎭 里手动点过的语速让位给新的固定语速
+        if ((e.fixedSpeedEnabled ? e.fixedSpeed : '') !== prevFixed) e.fixedSpeedAt = Date.now();
         e.tags = [...new Set(e.tags)];
         if (e.isUser) {
             // 一个用户人设只有一个「我」：换成这次保存的

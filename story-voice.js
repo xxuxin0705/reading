@@ -840,7 +840,7 @@ export class StoryVoice {
             if (hit) v = entry.lines[hit];
         }
         if (!v) return null;
-        return { s: v.s || '', p: v.pace || 'normal', paceManual: !!v.paceManual, t: Number(v.t) || 0, tone: entry.tone || '', role: v.role || '', why: v.why || '', amb: v.amb || '' };
+        return { s: v.s || '', p: v.pace || 'normal', paceManual: !!v.paceManual, paceManualAt: Number(v.paceManualAt) || 0, t: Number(v.t) || 0, tone: entry.tone || '', role: v.role || '', why: v.why || '', amb: v.amb || '' };
     }
 
     // ---------- 设置 ----------
@@ -1962,16 +1962,16 @@ export class StoryVoice {
         const lang = String(obj.ttsLanguageBoost || 'auto').trim() || 'auto';
         const has = Object.entries(voices).filter(([, v]) => String(v || '').trim());
         const st = this.getSettings();
-        if (st.channelMode === 'unified' && String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider] || '').trim()) return { voice: String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider]).trim(), provider: st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null };
+        if (st.channelMode === 'unified' && String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider] || '').trim()) return { voice: String(voices[st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider]).trim(), provider: st.ttsProvider === 'custom_openai' ? 'custom_openai' : globalProvider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null, fixedSpeedAt: Number(obj.fixedSpeedAt) || 0 };
         // 统一用一个渠道：这个人没填这个渠道的音色，就用这个渠道的默认音色（别把别家的音色 ID 发过去，会报 voice id not exist）
         if (st.channelMode === 'unified') {
-            return (has.length || String(obj.ttsVoice || '').trim()) ? { voice: '', provider: globalProvider, languageBoost: lang, fallbackVoice: true, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null } : null;
+            return (has.length || String(obj.ttsVoice || '').trim()) ? { voice: '', provider: globalProvider, languageBoost: lang, fallbackVoice: true, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null, fixedSpeedAt: Number(obj.fixedSpeedAt) || 0 } : null;
         }
         // 每个人按自己配的：他填了哪个渠道的音色就走哪个渠道
         const provider = bound || globalProvider;
-        if (String(voices[provider] || '').trim()) return { voice: String(voices[provider]).trim(), provider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null };
-        if (has.length) return { voice: String(has[0][1]).trim(), provider: has[0][0], languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null };
-        if (String(obj.ttsVoice || '').trim()) return { voice: String(obj.ttsVoice).trim(), provider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null };
+        if (String(voices[provider] || '').trim()) return { voice: String(voices[provider]).trim(), provider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null, fixedSpeedAt: Number(obj.fixedSpeedAt) || 0 };
+        if (has.length) return { voice: String(has[0][1]).trim(), provider: has[0][0], languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null, fixedSpeedAt: Number(obj.fixedSpeedAt) || 0 };
+        if (String(obj.ttsVoice || '').trim()) return { voice: String(obj.ttsVoice).trim(), provider, languageBoost: lang, fixedSpeed: obj.fixedSpeedEnabled ? obj.fixedSpeed || 'normal' : null, fixedSpeedAt: Number(obj.fixedSpeedAt) || 0 };
         return null;
     }
 
@@ -2056,6 +2056,16 @@ export class StoryVoice {
     fixedPace(speaker = '') {
         const hit = this._findWechatVoice(speaker);
         return hit?.voiceInfo?.fixedSpeed || null;
+    }
+
+    // 这句的语速算不算“手动调过”：只有在固定语速设好之后（或这个人没开固定语速）点的才算，
+    // 早于固定语速的手动选择不再挡住固定语速
+    manualPace(speaker = '', line = null) {
+        if (!line?.paceManual) return false;
+        const hit = this._findWechatVoice(speaker);
+        const fixed = hit?.voiceInfo?.fixedSpeed;
+        if (!fixed) return true;
+        return (Number(line.paceManualAt) || 0) >= (Number(hit.voiceInfo.fixedSpeedAt) || 0);
     }
 
     playbackRate(speaker = '', pace = 'normal', manual = false) {
@@ -2255,7 +2265,7 @@ export class StoryVoice {
             }
             const blobs = await Promise.all(joined.map(u => fetch(u).then(r => r.blob())));
             const blob = blobs.length === 1 ? blobs[0] : new Blob(blobs, { type: blobs[0]?.type || 'audio/mpeg' });
-            const rec = await this.saveFavorite({ text, speaker, blob, rate: this.playbackRate(speaker, deep?.p, !!deep?.paceManual), sig });
+            const rec = await this.saveFavorite({ text, speaker, blob, rate: this.playbackRate(speaker, deep?.p, this.manualPace(speaker, deep)), sig });
             if (rec && !rec._dup) this._askTags(rec, bar.querySelector('.yzsv-play'));
         } catch (err) {
             this._toast('收藏失败', String(err?.message || err).slice(0, 120), 'error');
@@ -2675,7 +2685,7 @@ export class StoryVoice {
             const fk = `${bar.dataset.mesid}:${bar.dataset.line}`;
             const fresh = !!this._forceFresh?.has(fk);
             if (fresh) this._forceFresh.delete(fk);
-            if (parts.length) queue.push({ bar, parts, voice: vi, rate: this.playbackRate(sp, vi.deep?.p, !!this._barDeep(bar)?.paceManual), fresh });
+            if (parts.length) queue.push({ bar, parts, voice: vi, rate: this.playbackRate(sp, vi.deep?.p, this.manualPace(sp, this._barDeep(bar))), fresh });
         }
         const jobs = new Array(queue.length);
         const start = (i) => {
