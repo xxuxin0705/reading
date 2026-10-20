@@ -9,7 +9,7 @@ import { openDeepEditor } from './deep-editor.js';
 import { gateCue, STORY_TONES } from './deep-analysis.js';
 import { buildDeepMessages, DEEP_SCHEMA, numberStory, parseDeep, applyToneGate, scriptForModel, TENSION_TEMPERATURE, PACE_SPEED } from './deep-analysis.js';
 
-export const SV_VERSION = '1.3.2'; // 改了文件记得一起改 manifest.json 的 version
+export const SV_VERSION = '1.3.7'; // 改了文件记得一起改 manifest.json 的 version
 const STORE_KEY = 'phone-story-voice';
 const LOCAL_SETTINGS_KEY = 'storyvoice-reader-settings-local'; // 设置的本机备份：只在启动时用一次（酒馆设置没来得及存到服务器就刷新时找回）
 const OLD_LOCAL_SETTINGS_KEY = 'yzr-settings-local';
@@ -197,6 +197,8 @@ export class StoryVoice {
         this.playing = null; // { btn, queue, stop }
         this._timers = new Map();
         this._installed = false;
+        // 只跟踪本实例真实注册过的事件，不能信 DOM 上的旧版「已绑定」标记。
+        this._boundTextBoxes = new WeakSet();
         this.speakerOverrides = this._loadOverrides();
         this._genderOf = this._loadGenders();
         this._speakerMemo = new Map();
@@ -1586,8 +1588,9 @@ export class StoryVoice {
     }
 
     _bindBox(box) {
-        if (box.dataset.yzsvBound === '1') return;
-        box.dataset.yzsvBound = '1';
+        if (this._boundTextBoxes.has(box)) return;
+        this._boundTextBoxes.add(box);
+        box.dataset.yzsvBound = '1'; // 兼容旧样式/旧标记，但不再作为事件绑定依据。
         // 长按 ↻ 选说话人
         let pressTimer = null;
         const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; };

@@ -99,6 +99,28 @@ function openPanel() {
         app.render('main');
     } catch (e) {
         console.error('[正文朗读] 打开设置失败:', e);
+        // 即使酒馆没有 toastr，也必须让用户看见实际错误，而不是表现为点击无效。
+        window.storyvoiceReader.lastOpenError = String(e?.stack || e?.message || e);
+        try {
+            const panel = overlay?.querySelector('.yzr-panel');
+            if (panel) {
+                panel.replaceChildren();
+                const card = document.createElement('div');
+                card.style.cssText = 'padding:24px 18px;color:#222;font:14px/1.65 sans-serif;overflow:auto;height:100%;box-sizing:border-box;';
+                const title = document.createElement('strong');
+                title.textContent = '正文朗读打开时出错';
+                const detail = document.createElement('pre');
+                detail.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;background:#eee;padding:12px;border-radius:8px;';
+                detail.textContent = String(e?.stack || e?.message || e).slice(0, 1800);
+                const close = document.createElement('button');
+                close.textContent = '关闭';
+                close.type = 'button';
+                close.style.cssText = 'margin-top:12px;padding:8px 20px;';
+                close.addEventListener('click', closePanel);
+                card.append(title, detail, close);
+                panel.appendChild(card);
+            }
+        } catch (_) { /* 展示错误失败，控制台仍留记录 */ }
         try { window.toastr?.error?.(String(e?.message || e).slice(0, 200), '正文朗读打不开'); } catch (err) { /* 忽略 */ }
     }
 }
@@ -116,13 +138,20 @@ library.onChange = () => sv.onVoicesChanged();
 const app = new StoryVoiceApp(shell, sv);
 window.storyvoiceReader = Object.assign(window.storyvoiceReader || {}, { storyVoice: sv, app, library, engine, open: openPanel });
 
+// 版本重装/切换后，DOM 元素可能还在但事件监听器已失效。
+// 不用 dataset 或 id 的存在表示「已绑定」：只认本次加载真正绑定过的对象。
+const liveWandItems = new WeakSet();
+const liveFloatButtons = new WeakSet();
+const liveSettingsEntries = new WeakSet();
+
 // ---------- 入口：魔法棒菜单 / 悬浮按钮（朗读设置 → 基础 → 入口 里选）----------
 const entryMode = () => { try { const m = sv.getSettings().entryMode; return ['wand', 'float', 'both'].includes(m) ? m : 'wand'; } catch (e) { return 'wand'; } };
 
 function addWandItem() {
     const menu = document.getElementById('extensionsMenu');
     if (!menu) return false;
-    if (document.getElementById('yzr-wand-item')) return true;
+    const old = document.getElementById('yzr-wand-item');
+    if (old && liveWandItems.has(old)) return true;
     const item = document.createElement('div');
     item.id = 'yzr-wand-item';
     item.className = 'list-group-item flex-container flexGap5 interactable';
@@ -134,21 +163,24 @@ function addWandItem() {
         setTimeout(openPanel, 30);
     };
     onTap(item, go);
-    menu.appendChild(item);
+    liveWandItems.add(item);
+    if (old) old.replaceWith(item); else menu.appendChild(item);
     return true;
 }
 
 // 悬浮按钮：可以拖到任意位置，松手贴到左右边，位置记在这台设备上
 const FLOAT_POS_KEY = 'yzr-float-pos';
 function addFloatButton() {
-    if (document.getElementById('yzr-float')) return;
+    const old = document.getElementById('yzr-float');
+    if (old && liveFloatButtons.has(old)) return;
     const btn = document.createElement('button');
     btn.id = 'yzr-float';
     btn.type = 'button';
     btn.title = '正文朗读';
     btn.setAttribute('aria-label', '打开正文朗读');
     btn.innerHTML = '<i class="fa-solid fa-volume-high" aria-hidden="true"></i>';
-    document.body.appendChild(btn);
+    if (old) old.replaceWith(btn); else document.body.appendChild(btn);
+    liveFloatButtons.add(btn);
     const size = 36;
     const clamp = (x, y) => [Math.max(4, Math.min(window.innerWidth - size - 4, x)), Math.max(4, Math.min(window.innerHeight - size - 4, y))];
     const place = (x, y) => { const [cx, cy] = clamp(x, y); btn.style.left = `${cx}px`; btn.style.top = `${cy}px`; };
@@ -183,7 +215,15 @@ function addFloatButton() {
         pos = { x: parseFloat(btn.style.left) / window.innerWidth, y: parseFloat(btn.style.top) / window.innerHeight };
         try { localStorage.setItem(FLOAT_POS_KEY, JSON.stringify(pos)); } catch (err) { /* 忽略 */ }
     };
-    btn.addEventListener('pointerup', end);
+    let pointerOpenAt = 0;
+    btn.addEventListener('pointerup', (e) => { pointerOpenAt = Date.now(); end(e); });
+    // 一些 Android WebView 不提供可用的 pointerup，仍需支持普通 click；
+    // 如果 pointerup 已经处理了，则 click 不得再打开第二次。
+    btn.addEventListener('click', (e) => {
+        if (Date.now() - pointerOpenAt < 650) return;
+        e.preventDefault();
+        openPanel();
+    });
     btn.addEventListener('pointercancel', (e) => { if (drag && e.pointerId === drag.id) { drag = null; btn.classList.remove('is-drag'); } });
     window.addEventListener('resize', fromSaved);
 }
@@ -200,11 +240,22 @@ function applyEntry() {
     return ok;
 }
 window.storyvoiceReader.applyEntry = applyEntry;
+window.storyvoiceReader.diagnose = () => ({
+    pluginReady: !!window.storyvoiceReader?.app,
+    wandPresent: !!document.getElementById('yzr-wand-item'),
+    wandBound: liveWandItems.has(document.getElementById('yzr-wand-item')),
+    floatPresent: !!document.getElementById('yzr-float'),
+    floatBound: liveFloatButtons.has(document.getElementById('yzr-float')),
+    overlayVisible: !!overlay && !overlay.hidden,
+    lastOpenError: window.storyvoiceReader.lastOpenError || null,
+});
 
 // 扩展设置面板里也放一个入口
 function addSettingsEntry() {
     const host = document.getElementById('extensions_settings2') || document.getElementById('extensions_settings');
-    if (!host || document.getElementById('yzr-settings-entry')) return !!host;
+    if (!host) return false;
+    const old = document.getElementById('yzr-settings-entry');
+    if (old && liveSettingsEntries.has(old)) return true;
     const box = document.createElement('div');
     box.id = 'yzr-settings-entry';
     box.innerHTML = `
@@ -215,7 +266,8 @@ function addSettingsEntry() {
                 <div class="menu_button" id="yzr-open-btn" role="button" tabindex="0" style="display:inline-flex;align-items:center;justify-content:center;width:auto;max-width:100%;white-space:nowrap;padding:6px 14px;margin:4px 0;"><i class="fa-solid fa-volume-high" style="margin-right:6px;"></i>打开正文朗读设置</div>
             </div>
         </div>`;
-    host.appendChild(box);
+    if (old) old.replaceWith(box); else host.appendChild(box);
+    liveSettingsEntries.add(box);
     const open = box.querySelector('#yzr-open-btn');
     onTap(open, (e) => { e?.stopPropagation?.(); openPanel(); });
     return true;
